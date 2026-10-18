@@ -17,13 +17,13 @@
 # =============================================================================
 
 # 注意：步骤函数通过表间接调用，lint 看不到调用点，会误报 SC2317
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2015
 
 set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.2.0"
+SCRIPT_VERSION="0.2.1"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -45,7 +45,6 @@ SBX_SUB="$SBX_DATA/sub"
 
 SBX_UNIT="/etc/systemd/system/sing-box.service"
 SBX_HOP_UNIT="/etc/systemd/system/singbox-porthop.service"
-SBX_BACKUP_ROOT="${ACXC_SBX_BACKUP:-/root/acxc-vps-backup}"
 
 LOG_FILE="${ACXC_SBX_LOG:-/var/log/acxc-singbox.log}"
 
@@ -63,15 +62,11 @@ SBX_ASSUME_YES=0
 SBX_TTY_OK=0
 SBX_COLOR_OFF=0
 SBX_EMBEDDED="${ACXC_SBX_EMBEDDED:-0}"
-SBX_NO_ALTSCREEN="${ACXC_SBX_NO_ALTSCREEN:-0}"
-SBX_ALT_SCREEN=0
 SBX_SNAP=""
-SBX_FAILED=0
 SBX_REPLY=""
 SBX_IND=""          # 横向居中用的左缩进（空格串）；非终端时为空
 declare -a SBX_PICKED=()   # sbx_pick_nodes 的解析结果
 
-declare -a SBX_ARGS=()
 
 # ============================== 输出与日志 ==================================
 C_RST=''; C_BLD=''; C_DIM=''; C_GRN=''; C_YEL=''; C_RED=''; C_CYN=''
@@ -416,6 +411,7 @@ sbx_require_root() {
 sbx_os_pretty() {
   local p="unknown"
   if [ -r /etc/os-release ]; then
+    # shellcheck source=/dev/null
     p="$( (. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-unknown}") 2>/dev/null || printf 'unknown' )"
   fi
   printf '%s' "$p"
@@ -641,6 +637,21 @@ sbx_node_load() { # $1=名字
   return 0
 }
 
+# 清掉某个节点（或全部）的内存缓存，写操作之后必须调用
+sbx_node_cache_drop() { # $1=名字（空=全部）
+  if [ -z "${1:-}" ]; then
+    SBX_NV=()
+    return 0
+  fi
+  local k
+  for k in "${!SBX_NV[@]}"; do
+    case "$k" in
+      "$1".*) unset 'SBX_NV[$k]' ;;
+    esac
+  done
+  return 0
+}
+
 sbx_node_set() { # $1=名字 $2=键 $3=值
   local f tmp
   f="$(sbx_node_file "$1")"
@@ -648,7 +659,9 @@ sbx_node_set() { # $1=名字 $2=键 $3=值
   tmp="$(mktemp)" || return 1
   jq --arg k "$2" --arg v "$3" --arg ts "$(date '+%Y-%m-%d %H:%M:%S')" \
      '.[$k]=$v | .updated=$ts' "$f" >"$tmp" || { rm -f "$tmp"; return 1; }
-  mv -f "$tmp" "$f" && chmod 600 "$f" 2>/dev/null
+  mv -f "$tmp" "$f" && chmod 600 "$f" 2>/dev/null || return 1
+  sbx_node_cache_drop "$1"
+  return 0
 }
 
 # 节点名列表：按创建时间从早到晚（先建的排前面），列表编号也用这个顺序
@@ -787,6 +800,7 @@ sbx_node_write() { # $1=JSON 文本（stdin 更安全，这里用文件）$2=目
     return 0
   fi
   install -m 600 "$src" "$dst" || return 1
+  sbx_node_cache_drop "$(basename "$dst" .json)"
   return 0
 }
 
@@ -937,7 +951,7 @@ sbx_add_snell() {
 # ---- SOCKS5（明文代理，必须带账号密码）-------------------------------------
 sbx_add_socks() {
   local name="$1" port="$2" remark="$3" user pw tmp
-  user="u$(sbx_gen_password 8 | tr 'A-Z' 'a-z')"
+  user="u$(sbx_gen_password 8 | tr '[:upper:]' '[:lower:]')"
   pw="$(sbx_gen_password 20)" || { err "生成密码失败"; return 1; }
   tmp="$(mktemp)" || return 1
   jq -n --arg n "$name" --argjson p "$port" --arg r "$remark" \
@@ -953,11 +967,11 @@ sbx_add_socks() {
 
 # ---- WireGuard（sing-box 里是 endpoint，不是 inbound）----------------------
 sbx_add_wireguard() {
-  local name="$1" port="$2" remark="$3" ks kc sp cp idx net tmp
+  local name="$1" port="$2" remark="$3" ks kc sp idx net tmp
   ks="$(sbx_singbox_keypair wg)" || { err "生成服务端密钥失败"; return 1; }
   kc="$(sbx_singbox_keypair wg)" || { err "生成客户端密钥失败"; return 1; }
-  sp="${ks%% *}"; cp="${kc%% *}"
   local s_pub c_priv c_pub
+  sp="${ks%% *}"
   s_pub="${ks##* }"; c_priv="${kc%% *}"; c_pub="${kc##* }"
   idx=$(( $(sbx_node_count) + 1 ))
   [ "$idx" -gt 254 ] && idx=$(( RANDOM % 200 + 20 ))
@@ -2124,8 +2138,8 @@ sbx_cmd_del() { # $1=编号/名字，空格或逗号分隔；a=全部
   done
   [ "${#targets[@]}" -gt 0 ] || { info "没有删除任何节点"; sbx_snapshot_drop; return 0; }
   for name in "${targets[@]}"; do
-    # 命令行里点名删（--del hk01 --yes）视为明确意图，不再问；菜单里删仍然要确认
-    if [ "$SBX_ASSUME_YES" -eq 0 ]; then
+    # 只有在真正的交互终端里才问确认；命令行点名删 / --yes / 无 tty 都视为明确意图
+    if [ "$SBX_ASSUME_YES" -eq 0 ] && [ "$SBX_TTY_OK" -eq 1 ]; then
       sbx_ask_yn "确认删除节点 ${name}？" n || continue
     fi
     rm -f "$(sbx_node_file "$name")"
@@ -2165,7 +2179,12 @@ sbx_cmd_links() { # 全部链接
   done
   [ -n "$out" ] || { warn "没有可用的节点"; return 1; }
   printf '%s' "$out" | sed '/^$/d'
-  if [ "$SBX_ASSUME_YES" -eq 0 ] && sbx_ask_yn "保存到 ${SBX_SUB}/links.txt？" y; then
+  local do_save=1
+  # 只有交互终端才问；命令行/无人值守视为明确要求，直接保存
+  if [ "$SBX_TTY_OK" -eq 1 ] && [ "$SBX_ASSUME_YES" -eq 0 ]; then
+    sbx_ask_yn "保存到 ${SBX_SUB}/links.txt？" y || do_save=0
+  fi
+  if [ "$do_save" -eq 1 ]; then
     if [ "$SBX_DRY_RUN" -eq 1 ]; then
       info "[dry-run] 将写入 ${SBX_SUB}/links.txt"
     else
@@ -2871,8 +2890,7 @@ sbx_ensure_cmd() {
 }
 
 sbx_main() {
-  SBX_ARGS=("$@")
-  sbx_bootstrap "$@" || true
+ sbx_bootstrap "$@" || true
   sbx_parse_args "$@" || return $?
 
   case "${SBX_ACTION:-}" in
@@ -2890,7 +2908,15 @@ sbx_main() {
   [ -n "${SBX_ARG_HOST:-}" ] && sbx_server_set public_ip "$SBX_ARG_HOST" >/dev/null 2>&1 || true
 
   case "${SBX_ACTION:-}" in
-    "")          sbx_menu_main ;;
+    "")
+      # --yes 是无人值守用的，不能进交互菜单（否则每个提问都自动回空值，菜单会死循环）
+      if [ "$SBX_ASSUME_YES" -eq 1 ]; then
+        err "--yes 需要配合具体动作，例如 --add / --list / --install"
+        printf '\n'
+        sbx_usage
+        return 2
+      fi
+      sbx_menu_main ;;
     install)     sbx_cmd_install ;;
     add)         sbx_cmd_add ;;
     del)         sbx_cmd_del "$SBX_ACTION_ARG" ;;
