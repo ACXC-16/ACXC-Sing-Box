@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.13"
+SCRIPT_VERSION="0.1.14"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -2242,6 +2242,23 @@ sbx_quickstart() {
   return 0
 }
 
+# 仓库里有新版但正在跑的是旧版时提醒一句（不然会出现"改了半天没生效"）
+sbx_check_stale() {
+  local d ver own_dir
+  own_dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")"
+  for d in "${ACXC_SBX_REPO:-}" /opt/ACXC-Sing-Box "$own_dir"; do
+    [ -n "$d" ] || continue
+    [ -f "$d/acxc-singbox.sh" ] || continue
+    [ "$d" = "$own_dir" ] && continue      # 自己就是仓库里那份，不用提示
+    ver="$(grep -m1 '^SCRIPT_VERSION=' "$d/acxc-singbox.sh" 2>/dev/null | cut -d'"' -f2)"
+    [ -n "$ver" ] || continue
+    [ "$ver" = "$SCRIPT_VERSION" ] && continue
+    warn "仓库里已是 v${ver}，但你运行的是 v${SCRIPT_VERSION}（菜单 12 更新脚本）"
+    return 0
+  done
+  return 0
+}
+
 # 保证快捷命令存在（从旧版的 sbx 迁移到 sb 时靠这个自愈）
 sbx_ensure_cmd() {
   [ "$SBX_DRY_RUN" -eq 1 ] && return 0
@@ -2266,6 +2283,7 @@ sbx_main() {
   sbx_check_deps || return 1
   sbx_layout_init || return 1
   sbx_ensure_cmd
+  sbx_check_stale
 
   [ -n "${SBX_ARG_HOST:-}" ] && sbx_server_set public_ip "$SBX_ARG_HOST" >/dev/null 2>&1 || true
 
