@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.18"
+SCRIPT_VERSION="0.1.19"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -584,13 +584,17 @@ sbx_node_set() { # $1=名字 $2=键 $3=值
   mv -f "$tmp" "$f" && chmod 600 "$f" 2>/dev/null
 }
 
-# 节点名列表（按创建时间排序，列表编号用这个顺序）
+# 节点名列表：按创建时间从早到晚（先建的排前面），列表编号也用这个顺序
 sbx_node_names() {
-  local f
+  local f created name
   for f in "$SBX_NODES"/*.json; do
     [ -e "$f" ] || continue
-    basename "$f" .json
-  done
+    name="$(basename "$f" .json)"
+    created="$(jq -r '.created // ""' "$f" 2>/dev/null)"
+    # 没有 created 的老节点按文件修改时间兜底
+    [ -n "$created" ] || created="$(date -r "$f" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '9999')"
+    printf '%s\t%s\n' "$created" "$name"
+  done | sort -t "$(printf '\t')" -k1,1 -k2,2 | cut -f2-
 }
 
 sbx_node_count() {
