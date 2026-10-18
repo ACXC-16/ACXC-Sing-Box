@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.17"
+SCRIPT_VERSION="0.1.18"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -68,6 +68,7 @@ SBX_ALT_SCREEN=0
 SBX_SNAP=""
 SBX_FAILED=0
 SBX_REPLY=""
+SBX_IND=""          # 横向居中用的左缩进（空格串）；非终端时为空
 
 declare -a SBX_ARGS=()
 
@@ -81,6 +82,62 @@ sbx_init_colors() {
   fi
 }
 
+# 终端尺寸（拿不到就给保守默认值）
+sbx_term_cols() {
+  local c="${COLUMNS:-0}"
+  case "$c" in ''|*[!0-9]*) c=0 ;; esac
+  if [ "$c" -le 0 ] && sbx_have tput; then
+    c="$(tput cols 2>/dev/null || printf '0')"
+    case "$c" in ''|*[!0-9]*) c=0 ;; esac
+  fi
+  [ "$c" -gt 0 ] || c=80
+  printf '%s' "$c"
+}
+
+sbx_term_rows() {
+  local r="${LINES:-0}"
+  case "$r" in ''|*[!0-9]*) r=0 ;; esac
+  if [ "$r" -le 0 ] && sbx_have tput; then
+    r="$(tput lines 2>/dev/null || printf '0')"
+    case "$r" in ''|*[!0-9]*) r=0 ;; esac
+  fi
+  [ "$r" -gt 0 ] || r=24
+  printf '%s' "$r"
+}
+
+# 算出横向左缩进：整块内容宽约 52 列，居中摆放
+sbx_calc_indent() {
+  SBX_IND=""
+  [ "$SBX_TTY_OK" -eq 1 ] || return 0
+  local cols pad
+  cols="$(sbx_term_cols)"
+  [ "$cols" -lt 72 ] && return 0
+  pad=$(( (cols - 52) / 2 ))
+  [ "$pad" -gt 24 ] && pad=24
+  [ "$pad" -lt 1 ] && pad=0
+  [ "$pad" -eq 0 ] && return 0
+  printf -v SBX_IND '%*s' "$pad" ""
+  return 0
+}
+
+# 顶部留白：屏幕高就把内容压到中间偏上
+sbx_vmargin() {
+  [ "$SBX_TTY_OK" -eq 1 ] || return 0
+  local rows n
+  rows="$(sbx_term_rows)"
+  n=$(( (rows - 32) / 2 ))
+  [ "$n" -lt 1 ] && n=1
+  [ "$n" -gt 8 ] && n=8
+  while [ "$n" -gt 0 ]; do printf '\n'; n=$((n - 1)); done
+  return 0
+}
+
+# 给多行文本整体加左缩进
+sbx_indent_text() {
+  local ind="${SBX_IND-}"
+  if [ -z "$ind" ]; then cat; else sed "s/^/$ind/"; fi
+}
+
 # 日志函数无条件定义（下划线前缀，撞名概率极低）
 _sbx_ts() { date '+%Y-%m-%d %H:%M:%S'; }
 _sbx_log() {
@@ -91,10 +148,10 @@ _sbx_log() {
 
 # 宿主（init.sh）已经定义了同名输出函数就直接用，保证嵌进去后观感一致
 if ! declare -F info >/dev/null 2>&1; then
-  info()  { printf '%s\n' "  ${C_CYN}[信息]${C_RST} $*"; _sbx_log INFO "$*"; }
-  ok()    { printf '%s\n' "  ${C_GRN}[成功]${C_RST} $*"; _sbx_log OK "$*"; }
-  warn()  { printf '%s\n' "  ${C_YEL}[注意]${C_RST} $*" >&2; _sbx_log WARN "$*"; }
-  err()   { printf '%s\n' "  ${C_RED}[错误]${C_RST} $*" >&2; _sbx_log ERROR "$*"; }
+  info()  { printf '%s\n' "${SBX_IND-}  ${C_CYN}[信息]${C_RST} $*"; _sbx_log INFO "$*"; }
+  ok()    { printf '%s\n' "${SBX_IND-}  ${C_GRN}[成功]${C_RST} $*"; _sbx_log OK "$*"; }
+  warn()  { printf '%s\n' "${SBX_IND-}  ${C_YEL}[注意]${C_RST} $*" >&2; _sbx_log WARN "$*"; }
+  err()   { printf '%s\n' "${SBX_IND-}  ${C_RED}[错误]${C_RST} $*" >&2; _sbx_log ERROR "$*"; }
 fi
 
 sbx_die() { err "$*"; return 1; }
@@ -122,7 +179,7 @@ sbx_padv() { # $1=变量名 $2=文本 $3=宽度
 sbx_kv() { # $1=标签 $2=值（按显示宽度对齐，中文标签也不会歪）
   local k
   sbx_padv k "$1" 16
-  printf '  %s %s\n' "$k" "$2"
+  printf '%s  %s %s\n' "${SBX_IND-}" "$k" "$2"
 }
 sbx_have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -170,15 +227,15 @@ sbx_prompt() {
   fi
   if [ "$SBX_TTY_OK" -eq 1 ]; then
     if [ -n "$d" ]; then
-      IFS= read -r -p "  $p（$d）: " line </dev/tty || return 1
+      IFS= read -r -p "${SBX_IND-}  $p（$d）: " line </dev/tty || return 1
     else
-      IFS= read -r -p "  $p: " line </dev/tty || return 1
+      IFS= read -r -p "${SBX_IND-}  $p: " line </dev/tty || return 1
     fi
   else
     if [ -n "$d" ]; then
-      IFS= read -r -p "  $p（$d）: " line || return 1
+      IFS= read -r -p "${SBX_IND-}  $p（$d）: " line || return 1
     else
-      IFS= read -r -p "  $p: " line || return 1
+      IFS= read -r -p "${SBX_IND-}  $p: " line || return 1
     fi
   fi
   SBX_REPLY="$(sbx_trim "${line:-$d}")"
@@ -1421,13 +1478,14 @@ sbx_cmd_update_singbox() {
 }
 
 # ============================== 节点：命令 ==================================
-sbx_cmd_list() {
+sbx_cmd_list() { # $1=页脚提示（可空）
+  local footer="${1:-输入编号查看详情，直接回车返回上级菜单}"
   local name i=0 n=0 c1 c2 c3 c4 c5
   sbx_screen_header "节点列表"
   sbx_padv c1 "编号" 4; sbx_padv c2 "名字" 22; sbx_padv c3 "协议" 32
   sbx_padv c4 "端口" 7; sbx_padv c5 "状态" 8
-  printf '  %s %s %s %s %s 备注\n' "$c1" "$c2" "$c3" "$c4" "$c5"
-  printf '  %s\n' "──────────────────────────────────────────────────────────────────────────"
+  printf '%s  %s %s %s %s %s 备注\n' "${SBX_IND-}" "$c1" "$c2" "$c3" "$c4" "$c5"
+  printf '%s  %s\n' "${SBX_IND-}" "──────────────────────────────────────────────────────────────────────────"
   for name in $(sbx_node_names); do
     i=$((i + 1)); n=$((n + 1))
     local st="停止"
@@ -1437,10 +1495,10 @@ sbx_cmd_list() {
     sbx_padv c3 "$(sbx_proto_label "$(sbx_node_get "$name" proto)")" 32
     sbx_padv c4 "$(sbx_node_get "$name" port)" 7
     sbx_padv c5 "$st" 8
-    printf '  %s %s %s %s %s %s\n' "$c1" "$c2" "$c3" "$c4" "$c5" "$(sbx_node_get "$name" remark)"
+    printf '%s  %s %s %s %s %s %s\n' "${SBX_IND-}" "$c1" "$c2" "$c3" "$c4" "$c5" "$(sbx_node_get "$name" remark)"
   done
-  [ "$n" -eq 0 ] && printf '  （还没有节点，选 2) 添加协议）\n'
-  printf '\n  %s输入编号查看详情，直接回车返回上级菜单%s\n\n' "$C_DIM" "$C_RST"
+  [ "$n" -eq 0 ] && printf '%s  （还没有节点，选 2) 添加协议）\n' "${SBX_IND-}"
+  printf '\n%s  %s%s%s\n\n' "${SBX_IND-}" "$C_DIM" "$footer" "$C_RST"
   return 0
 }
 
@@ -1485,8 +1543,8 @@ sbx_show_node() {
   esac
   printf '\n'
   link="$(sbx_link_node "$name")" || { warn "生成链接失败"; return 1; }
-  printf '  %s分享链接%s\n' "$C_BLD" "$C_RST"
-  printf '  %s\n\n' "$link"
+  printf '%s  %s分享链接%s\n' "${SBX_IND-}" "$C_BLD" "$C_RST"
+  printf '%s  %s\n\n' "${SBX_IND-}" "$link"
   return 0
 }
 
@@ -1499,13 +1557,14 @@ sbx_cmd_add() {
   [ -n "${SBX_PROTO_HINT:-}" ] && proto="$SBX_PROTO_HINT"
   if [ -z "${proto:-}" ]; then
     sbx_screen_header "添加协议"
-    printf '  %s1)%s %-32s%s（无需域名，推荐）%s\n' "$C_GRN" "$C_RST" "VLESS+TCP+XTLS Vision+Reality" "$C_DIM" "$C_RST"
-    printf '  %s2)%s %-32s%s（UDP，抗丢包）%s\n' "$C_GRN" "$C_RST" "Hysteria2" "$C_DIM" "$C_RST"
-    printf '  %s3)%s %-32s%s（兼容性最好）%s\n' "$C_GRN" "$C_RST" "Shadowsocks 2022" "$C_DIM" "$C_RST"
-    printf '  %s4)%s %-32s%s（需要伪装域名）%s\n' "$C_GRN" "$C_RST" "Trojan + TLS" "$C_DIM" "$C_RST"
-    printf '\n'
+    printf '%s  %s1)%s %-32s%s（无需域名，推荐）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "VLESS+TCP+XTLS Vision+Reality" "$C_DIM" "$C_RST"
+    printf '%s  %s2)%s %-32s%s（UDP，抗丢包）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "Hysteria2" "$C_DIM" "$C_RST"
+    printf '%s  %s3)%s %-32s%s（兼容性最好）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "Shadowsocks 2022" "$C_DIM" "$C_RST"
+    printf '%s  %s4)%s %-32s%s（需要伪装域名）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "Trojan + TLS" "$C_DIM" "$C_RST"
+    printf '\n%s  %s直接回车返回上级菜单%s\n\n' "${SBX_IND-}" "$C_DIM" "$C_RST"
     sbx_prompt "请选择协议（1-4）" "" || return 1
     case "$SBX_REPLY" in
+      '') return 0 ;;
       1|reality|vless) proto="reality" ;;
       2|hy2|hysteria2) proto="hysteria2" ;;
       3|ss|shadowsocks) proto="shadowsocks" ;;
@@ -1612,10 +1671,11 @@ sbx_cmd_del() { # $1=编号/名字，空格或逗号分隔；a=全部
   local arg="${1:-}" name
   sbx_screen_header "删除协议"
   if [ -z "$arg" ]; then
-    sbx_cmd_list
+    sbx_cmd_list "输入要删除的编号，直接回车返回上级菜单"
     info "多个用空格分隔，例如 1 2 3；输入 a 删除全部"
     sbx_prompt "要删除的编号/名字" "" || return 1
     arg="$SBX_REPLY"
+    [ -n "$arg" ] || return 0
   fi
   if [ "$arg" = "a" ] || [ "$arg" = "A" ]; then
     sbx_ask_yn "确认删除全部节点？" n || { info "已取消"; return 0; }
@@ -1750,8 +1810,8 @@ sbx_status_line() {
     if sbx_svc_active; then st="运行中"; sc="$C_GRN"; else st="已停止"; sc="$C_RED"; fi
   fi
   c="$(sbx_node_count)"
-  printf '  %sv%s%s · sing-box %s · %s%s%s · %s 个节点\n' \
-    "$C_DIM" "$SCRIPT_VERSION" "$C_RST" "$ver" "$sc" "$st" "$C_RST" "$c"
+  printf '%s  %sv%s%s · sing-box %s · %s%s%s · %s 个节点\n' \
+    "${SBX_IND-}" "$C_DIM" "$SCRIPT_VERSION" "$C_RST" "$ver" "$sc" "$st" "$C_RST" "$c"
 }
 
 sbx_cmd_info() {
@@ -2045,19 +2105,22 @@ sbx_menu_list() {
   local i=0 item
   for item in "${SBX_MENU_ITEMS[@]}"; do
     i=$((i + 1))
-    printf '   %s%2d)%s %s\n' "$C_GRN" "$i" "$C_RST" "$item"
+    printf '%s   %s%2d)%s %s\n' "${SBX_IND-}" "$C_GRN" "$i" "$C_RST" "$item"
     case "$i" in 5|9) printf '\n' ;; esac
   done
   return 0
 }
 
 sbx_banner() {
+  sbx_calc_indent
+  sbx_vmargin
   sbx_build_banner
-  printf '%s' "${C_BLD}${C_CYN}${SBX_BANNER}${C_RST}"
-  printf '\n  %s%sACXC-SINGBOX%s  %ssing-box 协议管理%s\n' \
-    "$C_BLD" "$C_CYN" "$C_RST" "$C_DIM" "$C_RST"
+  printf '%s' "${C_BLD}${C_CYN}${SBX_BANNER}${C_RST}" | sbx_indent_text
+  printf '\n%s  %s%sACXC-SINGBOX%s  %ssing-box 协议管理%s\n' \
+    "${SBX_IND-}" "$C_BLD" "$C_CYN" "$C_RST" "$C_DIM" "$C_RST"
   sbx_status_line
-  printf '  %s──────────────────────────────────────────────%s\n\n' "$C_DIM" "$C_RST"
+  printf '%s  %s──────────────────────────────────────────────%s\n\n' \
+    "${SBX_IND-}" "$C_DIM" "$C_RST"
 }
 
 # 二级界面统一的头部：logo + 标题 + 分隔线。同一屏只画一次，嵌套调用不会重复
@@ -2068,10 +2131,13 @@ sbx_screen_header() { # $1=标题
   [ "${SBX_IN_MENU:-0}" = "1" ] || return 0
   [ "${SBX_SCREEN_STARTED:-0}" = "1" ] && return 0
   SBX_SCREEN_STARTED=1
+  sbx_calc_indent
+  sbx_vmargin
   sbx_build_banner
-  printf '%s' "${C_BLD}${C_CYN}${SBX_BANNER}${C_RST}"
-  printf '\n  %s%s%s\n' "$C_BLD" "${1:-}" "$C_RST"
-  printf '  %s──────────────────────────────────────────────%s\n\n' "$C_DIM" "$C_RST"
+  printf '%s' "${C_BLD}${C_CYN}${SBX_BANNER}${C_RST}" | sbx_indent_text
+  printf '\n%s  %s%s%s\n' "${SBX_IND-}" "$C_BLD" "${1:-}" "$C_RST"
+  printf '%s  %s──────────────────────────────────────────────%s\n\n' \
+    "${SBX_IND-}" "$C_DIM" "$C_RST"
   return 0
 }
 
@@ -2123,9 +2189,9 @@ sbx_menu_main() {
     sbx_clear
     sbx_banner
     sbx_check_update_quiet
-    printf '  %s操作菜单%s\n\n' "$C_BLD" "$C_RST"
+    printf '%s  %s操作菜单%s\n\n' "${SBX_IND-}" "$C_BLD" "$C_RST"
     sbx_menu_list
-    printf '\n   %s 0)%s 退出\n\n' "$C_DIM" "$C_RST"
+    printf '\n%s   %s 0)%s 退出\n\n' "${SBX_IND-}" "$C_DIM" "$C_RST"
     sbx_prompt "请选择（0-13）" "" || return 0
     choice="$SBX_REPLY"
     printf '\n'
@@ -2149,7 +2215,7 @@ sbx_menu_main() {
       2) sbx_cmd_add; sbx_pause ;;
       3) sbx_cmd_del; sbx_pause ;;
       4) sbx_screen_header "修改协议端口"
-         sbx_cmd_list
+         sbx_cmd_list "输入要改端口的编号，直接回车返回上级菜单"
          sbx_prompt "要改端口的编号/名字" "" || continue
          [ -n "$SBX_REPLY" ] || continue
          sbx_resolve_node "$SBX_REPLY" || { err "找不到节点"; sbx_pause; continue; }
@@ -2182,7 +2248,8 @@ sbx_cmd_hop_menu() {
     info "还没有 Hysteria2 节点（先 2) 添加协议）"
     return 0
   fi
-  printf '  可用的 Hysteria2 节点：%s\n\n' "${hy2# }"
+  printf '%s  可用的 Hysteria2 节点：%s\n' "${SBX_IND-}" "${hy2# }"
+  printf '%s  %s直接回车返回上级菜单%s\n\n' "${SBX_IND-}" "$C_DIM" "$C_RST"
   sbx_prompt "节点编号/名字" "" || return 0
   [ -n "$SBX_REPLY" ] || return 0
   sbx_resolve_node "$SBX_REPLY" || { err "找不到节点"; return 1; }
