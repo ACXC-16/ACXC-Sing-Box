@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.16"
+SCRIPT_VERSION="0.1.17"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -2199,6 +2199,32 @@ sbx_cmd_hop_menu() {
   return 0
 }
 
+# 诊断：把「正在跑的 / 仓库里的 / 安装位的」三个版本列出来
+sbx_cmd_where() {
+  local own repo rv iv link
+  own="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+  printf '\n  运行文件   %s\n' "$own"
+  printf '  运行版本   v%s\n' "$SCRIPT_VERSION"
+  if repo="$(sbx_repo_dir 2>/dev/null)"; then
+    rv="$(grep -m1 '^SCRIPT_VERSION=' "$repo/acxc-singbox.sh" 2>/dev/null | cut -d'"' -f2)"
+    printf '  仓库目录   %s（v%s）\n' "$repo" "${rv:-?}"
+  else
+    printf '  仓库目录   未找到（/opt/ACXC-Sing-Box 不存在或不是 git 仓库）\n'
+  fi
+  if [ -f "$SCRIPT_SELF_PATH" ]; then
+    iv="$(grep -m1 '^SCRIPT_VERSION=' "$SCRIPT_SELF_PATH" 2>/dev/null | cut -d'"' -f2)"
+    printf '  安装位     %s（v%s）\n' "$SCRIPT_SELF_PATH" "${iv:-?}"
+  else
+    printf '  安装位     %s（不存在）\n' "$SCRIPT_SELF_PATH"
+  fi
+  link="$(readlink "$SBX_CMD_PATH" 2>/dev/null || true)"
+  printf '  快捷命令   %s -> %s\n\n' "$SBX_CMD_PATH" "${link:-（未创建）}"
+  if [ -n "${rv:-}" ] && [ "$rv" != "$SCRIPT_VERSION" ]; then
+    warn "仓库里是新版 v${rv}，当前跑的是 v${SCRIPT_VERSION}，菜单 12) 可同步"
+  fi
+  return 0
+}
+
 # ============================== 命令行 ======================================
 sbx_usage() {
   cat <<EOF
@@ -2216,6 +2242,7 @@ ${SCRIPT_NAME} v${SCRIPT_VERSION}
   bash $0 --start | --stop | --restart | --status | --log [行数]
   bash $0 --update-singbox [--sb-version x.y.z]
   bash $0 --self-test               用临时目录验证四种协议配置是否合法
+  bash $0 --where                   显示运行的/仓库的/安装位的版本，排查"改了没生效"
   bash $0 --update-script [本地文件|URL]
   bash $0 --uninstall [--purge]
   bash $0 --host <IP>              链接里使用的地址（默认自动探测）
@@ -2268,6 +2295,7 @@ sbx_parse_args() {
       --log) shift; SBX_ACTION="log"; SBX_ACTION_ARG="${1:-40}" ;;
       --update-singbox) SBX_ACTION="update-singbox" ;;
       --self-test) SBX_ACTION="self-test" ;;
+      --where) SBX_ACTION="where" ;;
       --update-script) SBX_ACTION="update-script"
                        if [ -n "${2:-}" ] && [ "${2#-}" = "$2" ]; then SBX_ACTION_ARG="$2"; shift; fi ;;
       --uninstall) SBX_ACTION="uninstall" ;;
@@ -2373,6 +2401,7 @@ sbx_main() {
     log)         sbx_cmd_log "${SBX_ACTION_ARG:-40}" ;;
     update-singbox) sbx_cmd_update_singbox ;;
     self-test)   sbx_self_test ;;
+    where)       sbx_cmd_where ;;
     update-script)  sbx_cmd_update_script "$SBX_ACTION_ARG" ;;
     uninstall)   sbx_cmd_uninstall "$SBX_ACTION_ARG" ;;
     *) sbx_usage; return 2 ;;
