@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.28"
+SCRIPT_VERSION="0.1.29"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -1956,7 +1956,7 @@ sbx_status_line() {
 
 sbx_cmd_info() {
   local ip="" h
-  sbx_screen_header "节点信息"
+  sbx_screen_header "服务器信息"
   sbx_kv "系统" "$(sbx_os_pretty)"
   sbx_kv "内核" "$(uname -r)"
   sbx_kv "架构" "$(uname -m)"
@@ -2230,7 +2230,7 @@ SBX_MENU_ITEMS=(
   "删除协议"
   "修改协议端口"
   "HY2 端口跳跃"
-  "节点信息"
+  "服务器信息"
   "启动服务"
   "停止服务"
   "重启服务"
