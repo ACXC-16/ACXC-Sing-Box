@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.0"
+SCRIPT_VERSION="0.1.1"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -52,8 +52,8 @@ LOG_FILE="${ACXC_SBX_LOG:-/var/log/acxc-singbox.log}"
 SBX_SB_VERSION="${ACXC_SBX_SB_VERSION:-1.14.3}"
 
 # 默认值
-SBX_DEFAULT_SNI="www.microsoft.com"     # Reality 伪装目标
-SBX_DEFAULT_TLS_SNI="www.bing.com"      # 自签证书协议的默认 CN/SNI
+SBX_DEFAULT_SNI="https://addons.mozilla.org/"    # Reality 伪装目标（会自动取出主机名）
+SBX_DEFAULT_TLS_SNI="https://addons.mozilla.org/" # 自签证书协议的默认 CN/SNI
 SBX_DEFAULT_HOP_RANGE="20000-30000"
 
 # ---------------------------- 运行时状态 -------------------------------------
@@ -261,6 +261,35 @@ sbx_url_host() {
     *:*) printf '[%s]' "$1" ;;
     *)   printf '%s' "$1" ;;
   esac
+}
+
+# 从用户输入里取出主机名：https://addons.mozilla.org/ → addons.mozilla.org
+# 用户可能填 https://域名/、域名:8443、域名/path，统一归一化成裸域名
+sbx_sni_host() {
+  local s
+  s="$(sbx_trim "${1-}")"
+  s="${s#*://}"          # 去掉 scheme
+  s="${s%%/*}"           # 去掉路径
+  s="${s%%\?*}"
+  s="${s%%\#*}"
+  s="${s%%:*}"           # 去掉端口
+  printf '%s' "$s"
+}
+
+# 随机一个空闲高位端口。
+# 避开 20000-30000：那是 HY2 端口跳跃的默认段，节点监听在这个段里会被 DNAT 劫持
+sbx_random_port() {
+  local i=0 p
+  while [ "$i" -lt 60 ]; do
+    if [ $((RANDOM % 2)) -eq 0 ]; then
+      p=$(( RANDOM % 10000 + 10000 ))     # 10000-19999
+    else
+      p=$(( RANDOM % 29000 + 31000 ))     # 31000-59999
+    fi
+    sbx_port_in_use "$p" both || { printf '%s' "$p"; return 0; }
+    i=$((i + 1))
+  done
+  sbx_port_suggest 31000
 }
 
 # ============================== 系统 / 依赖 =================================
@@ -482,7 +511,7 @@ sbx_node_count() {
 
 sbx_proto_label() {
   case "$1" in
-    reality)     printf 'VLESS-Reality' ;;
+    reality)     printf 'VLESS+TCP+XTLS Vision+Reality' ;;
     hysteria2)   printf 'Hysteria2' ;;
     shadowsocks) printf 'SS2022' ;;
     trojan)      printf 'Trojan-TLS' ;;
@@ -696,7 +725,7 @@ sbx_render_hy2() {
     --arg sni "$sni" \
     --arg crt "$(jq -r '.cert_path' "$f")" \
     --arg key "$(jq -r '.key_path' "$f")" \
-    --arg masq "https://$sni" \
+    --arg masq "https://$sni/" \
     '{inbounds:[{type:"hysteria2", tag:$tag, listen:"::", listen_port:$port,
                  users:[{password:$pw}],
                  masquerade:$masq,
@@ -952,12 +981,116 @@ sbx_client_json() { # $1=名字
 sbx_qr() { # $1=内容
   local s="$1"
   if ! sbx_have qrencode; then
-    warn "未安装 qrencode，只显示链接（apt install qrencode 后可显示二维码）"
+    info "二维码需要 qrencode"
+    if [ "$SBX_ASSUME_YES" -eq 1 ] || sbx_ask_yn "现在安装 qrencode？" y; then
+      sbx_run env DEBIAN_FRONTEND=noninteractive apt-get install -y qrencode >/dev/null 2>&1 || true
+    fi
+  fi
+  if ! sbx_have qrencode; then
+    warn "未安装 qrencode，只显示链接"
     return 0
   fi
   printf '\n'
   printf '%s' "$s" | qrencode -t ANSIUTF8 2>/dev/null || warn "二维码渲染失败"
   printf '\n'
+  return 0
+}
+
+# ---- Clash / mihomo 配置 ----------------------------------------------------
+# YAML 里双引号字符串要转义：只保留安全字符，最省事
+sbx_yaml_name() {
+  local s="${1-}"
+  s="${s//\"/}"
+  s="${s//\\/}"
+  s="${s//$'\n'/ }"
+  printf '%s' "$s"
+}
+
+# 单个节点的 proxies 条目（带前导两空格，方便直接拼进 proxies:）
+sbx_clash_proxy() { # $1=名字
+  local name="$1" proto host port remark
+  sbx_node_exists "$name" || return 1
+  proto="$(sbx_node_get "$name" proto)"
+  port="$(sbx_node_get "$name" port)"
+  remark="$(sbx_yaml_name "$(sbx_node_get "$name" remark)")"
+  host="$(sbx_host_for "$name")" || return 1
+  case "$proto" in
+    reality)
+      cat <<EOF
+  - name: "$remark"
+    type: vless
+    server: $host
+    port: $port
+    uuid: $(sbx_node_get "$name" uuid)
+    network: tcp
+    udp: true
+    tls: true
+    flow: $(sbx_node_get "$name" flow)
+    servername: $(sbx_node_get "$name" sni)
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: $(sbx_node_get "$name" public_key)
+      short-id: "$(sbx_node_get "$name" short_id)"
+EOF
+      ;;
+    shadowsocks)
+      cat <<EOF
+  - name: "$remark"
+    type: ss
+    server: $host
+    port: $port
+    cipher: $(sbx_node_get "$name" method)
+    password: "$(sbx_node_get "$name" password)"
+    udp: true
+EOF
+      ;;
+    hysteria2)
+      cat <<EOF
+  - name: "$remark"
+    type: hysteria2
+    server: $host
+    port: $port
+    password: "$(sbx_node_get "$name" password)"
+    sni: $(sbx_node_get "$name" sni)
+    skip-cert-verify: true
+EOF
+      if [ -n "$(sbx_node_get "$name" hop)" ]; then
+        printf '    ports: "%s"\n' "$(sbx_node_get "$name" hop)"
+      fi
+      ;;
+    trojan)
+      cat <<EOF
+  - name: "$remark"
+    type: trojan
+    server: $host
+    port: $port
+    password: "$(sbx_node_get "$name" password)"
+    sni: $(sbx_node_get "$name" sni)
+    udp: true
+    skip-cert-verify: true
+    client-fingerprint: chrome
+EOF
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# 完整可用的 mihomo 配置（订阅用）
+sbx_clash_yaml() {
+  local name n=0
+  printf 'mixed-port: 7890\nallow-lan: false\nmode: rule\nlog-level: info\n'
+  printf 'proxies:\n'
+  for name in $(sbx_node_names); do
+    sbx_clash_proxy "$name"
+    n=$((n + 1))
+  done
+  [ "$n" -eq 0 ] && printf '  []\n'
+  printf 'proxy-groups:\n'
+  printf '  - name: PROXY\n    type: select\n    proxies:\n'
+  for name in $(sbx_node_names); do
+    printf '      - "%s"\n' "$(sbx_yaml_name "$(sbx_node_get "$name" remark)")"
+  done
+  printf 'rules:\n  - MATCH,PROXY\n'
   return 0
 }
 
@@ -1252,13 +1385,13 @@ sbx_cmd_update_singbox() {
 sbx_cmd_list() {
   local name i=0 n=0
   sbx_title "节点列表"
-  printf '  %-4s %-12s %-14s %-7s %-8s %s\n' "编号" "名字" "协议" "端口" "状态" "备注"
-  printf '  %s\n' "----------------------------------------------------------------"
+  printf '  %-4s %-12s %-32s %-7s %-8s %s\n' "编号" "名字" "协议" "端口" "状态" "备注"
+  printf '  %s\n' "--------------------------------------------------------------------------"
   for name in $(sbx_node_names); do
     i=$((i + 1)); n=$((n + 1))
     local st="停止"
     sbx_svc_active && st="运行"
-    printf '  %-4s %-12s %-14s %-7s %-8s %s\n' \
+    printf '  %-4s %-12s %-32s %-7s %-8s %s\n' \
       "$i" "$name" "$(sbx_proto_label "$(sbx_node_get "$name" proto)")" \
       "$(sbx_node_get "$name" port)" "$st" "$(sbx_node_get "$name" remark)"
   done
@@ -1308,11 +1441,17 @@ sbx_show_node() {
   esac
   printf '\n'
   link="$(sbx_link_node "$name")" || { warn "生成链接失败"; return 1; }
-  printf '  %s分享链接%s\n' "$C_BLD" "$C_RST"
+  printf '  %s① 分享链接%s\n' "$C_BLD" "$C_RST"
   printf '  %s\n\n' "$link"
-  if [ "$SBX_ASSUME_YES" -eq 0 ] && sbx_ask_yn "显示二维码？" n; then
+  printf '  %s② 二维码%s\n' "$C_BLD" "$C_RST"
+  if [ "$SBX_TTY_OK" -eq 1 ]; then
     sbx_qr "$link"
+  else
+    info "非交互环境，跳过二维码"
   fi
+  printf '  %s③ Clash 配置%s\n' "$C_BLD" "$C_RST"
+  sbx_clash_proxy "$name" 2>/dev/null | sed 's/^/  /'
+  printf '\n'
   return 0
 }
 
@@ -1325,10 +1464,10 @@ sbx_cmd_add() {
   [ -n "${SBX_PROTO_HINT:-}" ] && proto="$SBX_PROTO_HINT"
   if [ -z "${proto:-}" ]; then
     sbx_title "添加协议"
-    printf '  %s1)%s VLESS + Reality      %s（无需域名，推荐）%s\n' "$C_GRN" "$C_RST" "$C_DIM" "$C_RST"
-    printf '  %s2)%s Hysteria2            %s（UDP，抗丢包）%s\n' "$C_GRN" "$C_RST" "$C_DIM" "$C_RST"
-    printf '  %s3)%s Shadowsocks 2022     %s（兼容性最好）%s\n' "$C_GRN" "$C_RST" "$C_DIM" "$C_RST"
-    printf '  %s4)%s Trojan + TLS         %s（需要伪装域名）%s\n' "$C_GRN" "$C_RST" "$C_DIM" "$C_RST"
+    printf '  %s1)%s %-32s%s（无需域名，推荐）%s\n' "$C_GRN" "$C_RST" "VLESS+TCP+XTLS Vision+Reality" "$C_DIM" "$C_RST"
+    printf '  %s2)%s %-32s%s（UDP，抗丢包）%s\n' "$C_GRN" "$C_RST" "Hysteria2" "$C_DIM" "$C_RST"
+    printf '  %s3)%s %-32s%s（兼容性最好）%s\n' "$C_GRN" "$C_RST" "Shadowsocks 2022" "$C_DIM" "$C_RST"
+    printf '  %s4)%s %-32s%s（需要伪装域名）%s\n' "$C_GRN" "$C_RST" "Trojan + TLS" "$C_DIM" "$C_RST"
     printf '\n'
     sbx_prompt "请选择协议 [1-4]" "" || return 1
     case "$SBX_REPLY" in
@@ -1341,11 +1480,12 @@ sbx_cmd_add() {
   fi
 
   local prefix def_name name port def_port sni remark pnet
+  # 默认端口一律随机，用户直接回车就用随机值，也可以自己填
   case "$proto" in
-    reality)     prefix="v"; def_port=443 ;;
-    hysteria2)   prefix="h"; def_port=8443 ;;
-    shadowsocks) prefix="s"; def_port="$(sbx_port_suggest 2333)" ;;
-    trojan)      prefix="t"; def_port=8443 ;;
+    reality)     prefix="v"; def_port="$(sbx_random_port)" ;;
+    hysteria2)   prefix="h"; def_port="$(sbx_random_port)" ;;
+    shadowsocks) prefix="s"; def_port="$(sbx_random_port)" ;;
+    trojan)      prefix="t"; def_port="$(sbx_random_port)" ;;
     *) err "未知协议：$proto"; return 1 ;;
   esac
   pnet="$(sbx_proto_net "$proto")"
@@ -1396,7 +1536,11 @@ sbx_cmd_add() {
         sbx_prompt "Reality 伪装域名（不知道就回车）" "$SBX_DEFAULT_SNI" || { sbx_snapshot_drop; return 1; }
         sni="${SBX_REPLY:-$SBX_DEFAULT_SNI}"
       fi
-      info "生成密钥并写入配置…"
+      sni="$(sbx_sni_host "$sni")"
+      case "$sni" in
+        ''|*[!A-Za-z0-9.-]*) err "伪装域名不合法：$sni"; sbx_snapshot_drop; return 1 ;;
+      esac
+      info "生成密钥并写入配置…（伪装目标：$sni）"
       sbx_add_reality "$name" "$port" "$sni" "$remark" || { sbx_snapshot_drop; return 1; }
       ;;
     shadowsocks)
@@ -1410,9 +1554,13 @@ sbx_cmd_add() {
         sbx_prompt "证书域名 / SNI（没有域名就回车，用自签）" "$SBX_DEFAULT_TLS_SNI" || { sbx_snapshot_drop; return 1; }
         sni="${SBX_REPLY:-$SBX_DEFAULT_TLS_SNI}"
       fi
+      sni="$(sbx_sni_host "$sni")"
+      case "$sni" in
+        ''|*[!A-Za-z0-9.-]*) err "域名不合法：$sni"; sbx_snapshot_drop; return 1 ;;
+      esac
       local crt="${SBX_CERT_HINT:-}" key="${SBX_KEY_HINT:-}"
       if [ -z "$crt" ]; then
-        info "生成自签证书…"
+        info "生成自签证书（CN=$sni）…"
       fi
       sbx_add_tls_proto "$proto" "$name" "$port" "$sni" "$remark" "$crt" "$key" \
         || { sbx_snapshot_drop; return 1; }
@@ -1510,6 +1658,39 @@ sbx_cmd_links() { # 全部链接
     fi
   fi
   return 0
+}
+
+# 订阅/汇总文件：clash 配置 或 全部链接
+sbx_cmd_sub() { # $1=clash|links
+  local fmt="${1:-clash}" out
+  case "$fmt" in
+    clash)
+      out="$SBX_SUB/clash.yaml"
+      if [ "$(sbx_node_count)" -eq 0 ]; then
+        warn "还没有节点"
+        return 1
+      fi
+      if [ "$SBX_DRY_RUN" -eq 1 ]; then
+        info "[dry-run] 将生成 $out："
+        sbx_clash_yaml | sed 's/^/    /'
+        return 0
+      fi
+      mkdir -p "$SBX_SUB" || return 1
+      sbx_clash_yaml >"$out.tmp" && mv -f "$out.tmp" "$out" || return 1
+      chmod 600 "$out" 2>/dev/null || true
+      ok "已生成：$out"
+      info "把它下载到本地，用 Clash Verge / mihomo 直接导入"
+      return 0
+      ;;
+    links)
+      sbx_cmd_links
+      return $?
+      ;;
+    *)
+      err "未知格式：$fmt（可用：clash / links）"
+      return 1
+      ;;
+  esac
 }
 
 # ============================== 服务 / 信息 =================================
@@ -1750,8 +1931,16 @@ sbx_menu_main() {
     printf '\n'
     case "$choice" in
       0|q|Q|exit|quit) return 0 ;;
-      1) sbx_cmd_list; sbx_prompt "输入编号看详情（回车返回）" "" && [ -n "$SBX_REPLY" ] \
-           && { sbx_resolve_node "$SBX_REPLY" && sbx_show_node "$SBX_REPLY"; } ; sbx_pause ;;
+      1)
+         sbx_cmd_list
+         sbx_prompt "输入编号看详情 / c 生成 Clash 配置（回车返回）" "" || { sbx_pause; continue; }
+         case "$SBX_REPLY" in
+           '')  ;;
+           c|C) sbx_cmd_sub clash ;;
+           *)   if sbx_resolve_node "$SBX_REPLY"; then sbx_show_node "$SBX_REPLY"
+                else warn "找不到节点：$SBX_REPLY"; fi ;;
+         esac
+         sbx_pause ;;
       2) sbx_cmd_add; sbx_pause ;;
       3) sbx_cmd_del; sbx_pause ;;
       4) sbx_cmd_list
@@ -1812,6 +2001,8 @@ ${SCRIPT_NAME} v${SCRIPT_VERSION}
   bash $0 --install [--sb-version 1.14.3]
   bash $0 --add reality|hysteria2|shadowsocks|trojan [--name 名字] [--port 端口] [--sni 域名] [--remark 备注]
   bash $0 --list | --show <名字> | --link <名字> [--qr]
+  bash $0 --clash <名字>           只输出这一个节点的 Clash 配置
+  bash $0 --sub [clash|links]      生成订阅文件（clash.yaml / links.txt）
   bash $0 --del <名字> | --set-port <名字> <端口>
   bash $0 --hop <名字> <端口段|off>
   bash $0 --start | --stop | --restart | --status | --log [行数]
@@ -1852,6 +2043,9 @@ sbx_parse_args() {
       --del) shift; SBX_ACTION="del"; SBX_ACTION_ARG="${1-}"; shift || true; continue ;;
       --show) shift; SBX_ACTION="show"; SBX_ACTION_ARG="${1-}"; shift || true; continue ;;
       --link) shift; SBX_ACTION="link"; SBX_ACTION_ARG="${1-}"; shift || true; continue ;;
+      --clash) shift; SBX_ACTION="clash"; SBX_ACTION_ARG="${1-}"; shift || true; continue ;;
+      --sub) SBX_ACTION="sub"; SBX_ACTION_ARG="clash"
+             if [ -n "${2:-}" ] && [ "${2#-}" = "$2" ]; then SBX_ACTION_ARG="$2"; shift; fi ;;
       --set-port) shift; SBX_ACTION="set-port"; SBX_ACTION_ARG="${1-}"; shift || true
                   SBX_PORT_HINT="${1-}"; shift || true; continue ;;
       --hop) shift; SBX_ACTION="hop"; SBX_ACTION_ARG="${1-}"; shift || true
@@ -1929,6 +2123,9 @@ sbx_main() {
     link)        sbx_resolve_node "$SBX_ACTION_ARG" || return 1
                  local l; l="$(sbx_link_node "$SBX_REPLY")" && printf '%s\n' "$l"
                  [ "${SBX_QR:-0}" = 1 ] && sbx_qr "$l"; return 0 ;;
+    clash)       sbx_resolve_node "$SBX_ACTION_ARG" || return 1
+                 sbx_clash_proxy "$SBX_REPLY" ;;
+    sub)         sbx_cmd_sub "${SBX_ACTION_ARG:-clash}" ;;
     list)        sbx_cmd_list ;;
     links)       sbx_cmd_links ;;
     set-port)    sbx_resolve_node "$SBX_ACTION_ARG" && sbx_cmd_port "$SBX_REPLY" "$SBX_PORT_HINT" ;;
