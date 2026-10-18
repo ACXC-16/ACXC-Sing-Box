@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.8"
+SCRIPT_VERSION="0.1.9"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -210,8 +210,19 @@ sbx_valid_port() {
 }
 
 sbx_valid_name() {
-  case "${1:-}" in ''|*[!a-z0-9-]*) return 1 ;; esac
+  case "${1:-}" in ''|*[!A-Za-z0-9-]*) return 1 ;; esac
   [ "${#1}" -le 32 ] && [ "${#1}" -ge 1 ]
+}
+
+# 协议缩写，用于默认节点名 ACXC-SB-<缩写>
+sbx_proto_short() {
+  case "$1" in
+    reality)     printf 'Reality' ;;
+    hysteria2)   printf 'HY2' ;;
+    shadowsocks) printf 'SS' ;;
+    trojan)      printf 'Trojan' ;;
+    *)           printf '%s' "$1" ;;
+  esac
 }
 
 # 只向 stdout 输出密码
@@ -520,13 +531,14 @@ sbx_proto_label() {
   esac
 }
 
-# 下一个可用名字：<前缀><两位数>
+# 下一个可用名字：<基础名>、<基础名>-2、<基础名>-3…
 sbx_next_name() {
-  local p="$1" i=1 cand
-  while [ "$i" -lt 100 ]; do
-    cand="$(printf '%s%02d' "$p" "$i")"
-    sbx_node_exists "$cand" || { printf '%s' "$cand"; return 0; }
-    i=$((i + 1))
+  local base="$1" n=2 c
+  sbx_node_exists "$base" || { printf '%s' "$base"; return 0; }
+  while [ "$n" -lt 100 ]; do
+    c="${base}-${n}"
+    sbx_node_exists "$c" || { printf '%s' "$c"; return 0; }
+    n=$((n + 1))
   done
   return 1
 }
@@ -1471,18 +1483,16 @@ sbx_cmd_add() {
     esac
   fi
 
-  local prefix def_name name port def_port sni remark pnet
+  local base def_name name port def_port sni remark pnet
   # 默认端口一律随机，用户直接回车就用随机值，也可以自己填
   case "$proto" in
-    reality)     prefix="v"; def_port="$(sbx_random_port)" ;;
-    hysteria2)   prefix="h"; def_port="$(sbx_random_port)" ;;
-    shadowsocks) prefix="s"; def_port="$(sbx_random_port)" ;;
-    trojan)      prefix="t"; def_port="$(sbx_random_port)" ;;
+    reality|hysteria2|shadowsocks|trojan) def_port="$(sbx_random_port)" ;;
     *) err "未知协议：$proto"; return 1 ;;
   esac
   pnet="$(sbx_proto_net "$proto")"
-  prefix="${SBX_NAME_PREFIX:-$prefix}"
-  def_name="$(sbx_next_name "$prefix")"
+  # 默认名字：ACXC-SB-Reality / ACXC-SB-HY2 / ACXC-SB-SS / ACXC-SB-Trojan，重名自动加 -2 -3
+  base="${SBX_NAME_PREFIX:-ACXC-SB-$(sbx_proto_short "$proto")}"
+  def_name="$(sbx_next_name "$base")"
   if [ -n "${SBX_ARG_NAME:-}" ]; then
     name="$SBX_ARG_NAME"
     info "节点名字：$name"
@@ -1513,12 +1523,8 @@ sbx_cmd_add() {
     info "端口 $port 的 ${other} 已被别的节点占用，本节点走 ${pnet}，两者可以共存"
   fi
 
-  if [ -n "${SBX_ARG_REMARK:-}" ]; then
-    remark="$SBX_ARG_REMARK"
-  else
-    sbx_prompt "备注名" "$name" || return 1
-    remark="${SBX_REPLY:-$name}"
-  fi
+  # 不再单独问备注名：备注就是节点名字（分享链接 #后面显示的就是它）
+  remark="${SBX_ARG_REMARK:-$name}"
 
   sbx_snapshot || { err "创建快照失败"; return 1; }
   case "$proto" in
