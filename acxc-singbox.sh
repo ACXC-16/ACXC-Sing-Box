@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.1"
+SCRIPT_VERSION="0.1.2"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -145,13 +145,13 @@ sbx_prompt() {
   fi
   if [ "$SBX_TTY_OK" -eq 1 ]; then
     if [ -n "$d" ]; then
-      IFS= read -r -p "  $p [$d]: " line </dev/tty || return 1
+      IFS= read -r -p "  $p（$d）: " line </dev/tty || return 1
     else
       IFS= read -r -p "  $p: " line </dev/tty || return 1
     fi
   else
     if [ -n "$d" ]; then
-      IFS= read -r -p "  $p [$d]: " line || return 1
+      IFS= read -r -p "  $p（$d）: " line || return 1
     else
       IFS= read -r -p "  $p: " line || return 1
     fi
@@ -1339,7 +1339,7 @@ sbx_cmd_update_singbox() {
   local ver newbin tmpdir okflag=1
   ver="${SBX_SB_VERSION:-}"
   if [ "$SBX_ASSUME_YES" -eq 0 ]; then
-    sbx_prompt "目标版本（留空=当前默认 $SBX_SB_VERSION）" "" || return 1
+    sbx_prompt "目标版本" "$SBX_SB_VERSION" || return 1
     [ -n "$SBX_REPLY" ] && ver="$SBX_REPLY"
   fi
   [ -n "$ver" ] || ver="$SBX_SB_VERSION"
@@ -1396,7 +1396,7 @@ sbx_cmd_list() {
       "$(sbx_node_get "$name" port)" "$st" "$(sbx_node_get "$name" remark)"
   done
   [ "$n" -eq 0 ] && printf '  （还没有节点，选 2) 添加协议）\n'
-  printf '\n'
+  printf '\n  %s输入编号看详情，输入 c 生成 Clash 配置%s\n\n' "$C_DIM" "$C_RST"
   return 0
 }
 
@@ -1469,7 +1469,7 @@ sbx_cmd_add() {
     printf '  %s3)%s %-32s%s（兼容性最好）%s\n' "$C_GRN" "$C_RST" "Shadowsocks 2022" "$C_DIM" "$C_RST"
     printf '  %s4)%s %-32s%s（需要伪装域名）%s\n' "$C_GRN" "$C_RST" "Trojan + TLS" "$C_DIM" "$C_RST"
     printf '\n'
-    sbx_prompt "请选择协议 [1-4]" "" || return 1
+    sbx_prompt "请选择协议（1-4）" "" || return 1
     case "$SBX_REPLY" in
       1|reality|vless) proto="reality" ;;
       2|hy2|hysteria2) proto="hysteria2" ;;
@@ -1495,7 +1495,7 @@ sbx_cmd_add() {
     name="$SBX_ARG_NAME"
     info "节点名字：$name"
   else
-    sbx_prompt "节点名字（小写字母/数字/短横线）" "$def_name" || return 1
+    sbx_prompt "节点名字" "$def_name" || return 1
     name="${SBX_REPLY:-$def_name}"
   fi
   if ! sbx_valid_name "$name"; then err "名字不合法：$name"; return 1; fi
@@ -1524,7 +1524,7 @@ sbx_cmd_add() {
   if [ -n "${SBX_ARG_REMARK:-}" ]; then
     remark="$SBX_ARG_REMARK"
   else
-    sbx_prompt "备注名（客户端里显示这个）" "$name" || return 1
+    sbx_prompt "备注名" "$name" || return 1
     remark="${SBX_REPLY:-$name}"
   fi
 
@@ -1533,7 +1533,7 @@ sbx_cmd_add() {
     reality)
       sni="${SBX_SNI_HINT:-}"
       if [ -z "$sni" ]; then
-        sbx_prompt "Reality 伪装域名（不知道就回车）" "$SBX_DEFAULT_SNI" || { sbx_snapshot_drop; return 1; }
+        sbx_prompt "Reality 伪装域名" "$SBX_DEFAULT_SNI" || { sbx_snapshot_drop; return 1; }
         sni="${SBX_REPLY:-$SBX_DEFAULT_SNI}"
       fi
       sni="$(sbx_sni_host "$sni")"
@@ -1551,7 +1551,7 @@ sbx_cmd_add() {
     hysteria2|trojan)
       sni="${SBX_SNI_HINT:-}"
       if [ -z "$sni" ]; then
-        sbx_prompt "证书域名 / SNI（没有域名就回车，用自签）" "$SBX_DEFAULT_TLS_SNI" || { sbx_snapshot_drop; return 1; }
+        sbx_prompt "证书域名 / SNI" "$SBX_DEFAULT_TLS_SNI" || { sbx_snapshot_drop; return 1; }
         sni="${SBX_REPLY:-$SBX_DEFAULT_TLS_SNI}"
       fi
       sni="$(sbx_sni_host "$sni")"
@@ -1583,7 +1583,8 @@ sbx_cmd_del() { # $1=编号/名字，空格或逗号分隔；a=全部
   local arg="${1:-}" name
   if [ -z "$arg" ]; then
     sbx_cmd_list
-    sbx_prompt "要删除的编号/名字（空格或逗号分隔，a=全部）" "" || return 1
+    info "多个用逗号分隔，输入 a 删除全部"
+    sbx_prompt "要删除的编号/名字" "" || return 1
     arg="$SBX_REPLY"
   fi
   if [ "$arg" = "a" ] || [ "$arg" = "A" ]; then
@@ -1926,14 +1927,14 @@ sbx_menu_main() {
     printf '  %s13)%s 卸载\n' "$C_GRN" "$C_RST"
     printf '   %s0)%s 退出\n' "$C_DIM" "$C_RST"
     printf '\n'
-    sbx_prompt "请选择 [0-13]" "" || return 0
+    sbx_prompt "请选择（0-13）" "" || return 0
     choice="$SBX_REPLY"
     printf '\n'
     case "$choice" in
       0|q|Q|exit|quit) return 0 ;;
       1)
          sbx_cmd_list
-         sbx_prompt "输入编号看详情 / c 生成 Clash 配置（回车返回）" "" || { sbx_pause; continue; }
+         sbx_prompt "选择" "" || { sbx_pause; continue; }
          case "$SBX_REPLY" in
            '')  ;;
            c|C) sbx_cmd_sub clash ;;
@@ -1976,13 +1977,14 @@ sbx_cmd_hop_menu() {
     return 0
   fi
   printf '  可用的 Hysteria2 节点：%s\n\n' "${hy2# }"
-  sbx_prompt "节点编号/名字（回车返回）" "" || return 0
+  sbx_prompt "节点编号/名字" "" || return 0
   [ -n "$SBX_REPLY" ] || return 0
   sbx_resolve_node "$SBX_REPLY" || { err "找不到节点"; return 1; }
   name="$SBX_REPLY"
   local cur; cur="$(sbx_node_get "$name" hop)"
   sbx_kv "当前设置" "${cur:-未开启}"
-  sbx_prompt "端口段（如 20000-30000；off=关闭）" "${cur:-$SBX_DEFAULT_HOP_RANGE}" || return 0
+  info "输入 off 表示关闭端口跳跃"
+  sbx_prompt "端口段" "${cur:-$SBX_DEFAULT_HOP_RANGE}" || return 0
   sbx_hop_apply "$name" "${SBX_REPLY:-$SBX_DEFAULT_HOP_RANGE}" || return 1
   printf '\n'
   warn "别忘了在云厂商安全组放行 UDP ${SBX_REPLY}（否则只有主端口可用）"
