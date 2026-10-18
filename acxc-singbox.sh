@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.7"
+SCRIPT_VERSION="0.1.8"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -1913,7 +1913,7 @@ sbx_build_banner() {
 sbx_banner() {
   sbx_build_banner
   printf '%s' "${C_BLD}${C_CYN}${SBX_BANNER}${C_RST}"
-  printf '  %sACXC-SINGBOX%s  %ssing-box 协议管理%s\n' "$C_BLD" "$C_RST" "$C_DIM" "$C_RST"
+  printf '  %s%sACXC-SINGBOX%s  %ssing-box 协议管理%s\n' "$C_BLD" "$C_CYN" "$C_RST" "$C_DIM" "$C_RST"
   sbx_status_line
   printf '\n'
 }
