@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.10"
+SCRIPT_VERSION="0.1.11"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -1581,7 +1581,7 @@ sbx_cmd_del() { # $1=编号/名字，空格或逗号分隔；a=全部
   local arg="${1:-}" name
   if [ -z "$arg" ]; then
     sbx_cmd_list
-    info "多个用逗号分隔，输入 a 删除全部"
+    info "多个用空格分隔，例如 1 2 3；输入 a 删除全部"
     sbx_prompt "要删除的编号/名字" "" || return 1
     arg="$SBX_REPLY"
   fi
@@ -1597,14 +1597,21 @@ sbx_cmd_del() { # $1=编号/名字，空格或逗号分隔；a=全部
     return 0
   fi
   local okd=0
+  local -a targets=()
   sbx_snapshot || return 1
-  for name in $(printf '%s' "$arg" | tr ',' ' '); do
+  # 先把编号全部解析成名字，再统一删。
+  # 不能边解析边删：删掉一个之后编号会整体前移，"1 3" 会误删第 4 个。
+  # 空格、逗号、中文逗号、分号都能当分隔符
+  for name in $(printf '%s' "$arg" | sed 's/[,，;；]/ /g'); do
     [ -n "$name" ] || continue
     if ! sbx_resolve_node "$name"; then
       warn "找不到节点：$name"
       continue
     fi
-    name="$SBX_REPLY"
+    targets+=("$SBX_REPLY")
+  done
+  [ "${#targets[@]}" -gt 0 ] || { info "没有删除任何节点"; sbx_snapshot_drop; return 0; }
+  for name in "${targets[@]}"; do
     # 命令行里点名删（--del hk01 --yes）视为明确意图，不再问；菜单里删仍然要确认
     if [ "$SBX_ASSUME_YES" -eq 0 ]; then
       sbx_ask_yn "确认删除节点 ${name}？" n || continue
