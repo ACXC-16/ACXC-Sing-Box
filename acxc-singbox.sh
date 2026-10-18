@@ -23,10 +23,11 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.6"
+SCRIPT_VERSION="0.1.7"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
+SBX_CMD_PATH="${ACXC_SBX_CMD:-/usr/local/bin/sb}"
 
 # ---------------------------- 路径常量 ---------------------------------------
 # 全部支持用环境变量覆盖：测试、以及在主脚本里嵌不同目录时都不用改代码
@@ -1844,7 +1845,8 @@ sbx_cmd_update_script() { # $1=本地文件或 URL（可空 → 用 SCRIPT_UPDAT
   fi
   rm -f "$tmp"
   chmod +x "$SCRIPT_SELF_PATH" 2>/dev/null || true
-  ln -sf "$SCRIPT_SELF_PATH" /usr/local/bin/sbx 2>/dev/null || true
+  ln -sf "$SCRIPT_SELF_PATH" "$SBX_CMD_PATH" 2>/dev/null || true
+  [ -L /usr/local/bin/sbx ] && rm -f /usr/local/bin/sbx 2>/dev/null || true
   ok "脚本已更新：v${oldv} → v${newv:-未知}（重新运行生效）"
   return 0
 }
@@ -1888,7 +1890,7 @@ sbx_cmd_uninstall() {
   sbx_run rm -f "$SBX_BIN" "${SBX_BIN}.bak"
   sbx_run rm -rf "$SBX_DIR"
   [ "$purge" -eq 1 ] && sbx_run rm -rf "$SBX_DATA"
-  sbx_run rm -f /usr/local/bin/sbx
+  sbx_run rm -f "$SBX_CMD_PATH" /usr/local/bin/sbx
   ok "已卸载"
   return 0
 }
@@ -1916,26 +1918,30 @@ sbx_banner() {
   printf '\n'
 }
 
-# 把当前这份脚本装到标准位置，并建一个 sbx 快捷命令
+# 把当前这份脚本装到标准位置，并建一个 sb 快捷命令
 sbx_install_self() {
   local own
   own="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
   [ -f "$own" ] || { warn "找不到脚本自身：$own"; return 1; }
-  if [ "$own" = "$SCRIPT_SELF_PATH" ]; then
-    sbx_run ln -sf "$SCRIPT_SELF_PATH" /usr/local/bin/sbx || return 1
-    [ "$SBX_DRY_RUN" -eq 1 ] || ok "已创建命令 sbx"
-    return 0
+  if [ "$own" != "$SCRIPT_SELF_PATH" ]; then
+    sbx_run mkdir -p "$(dirname "$SCRIPT_SELF_PATH")" || return 1
+    sbx_run install -m 755 "$own" "$SCRIPT_SELF_PATH" || return 1
   fi
-  sbx_run mkdir -p "$(dirname "$SCRIPT_SELF_PATH")" || return 1
-  sbx_run install -m 755 "$own" "$SCRIPT_SELF_PATH" || return 1
-  sbx_run ln -sf "$SCRIPT_SELF_PATH" /usr/local/bin/sbx || return 1
-  [ "$SBX_DRY_RUN" -eq 1 ] || ok "已安装到 $SCRIPT_SELF_PATH，以后直接输入 sbx 就能打开"
+  sbx_run ln -sf "$SCRIPT_SELF_PATH" "$SBX_CMD_PATH" || return 1
+  # 清掉旧版本留下的 sbx 命令
+  [ -L /usr/local/bin/sbx ] && sbx_run rm -f /usr/local/bin/sbx
+  [ "$SBX_DRY_RUN" -eq 1 ] && return 0
+  if [ "$own" = "$SCRIPT_SELF_PATH" ]; then
+    ok "已创建命令 ${SBX_CMD_PATH##*/}"
+  else
+    ok "已安装到 $SCRIPT_SELF_PATH，以后直接输入 ${SBX_CMD_PATH##*/} 就能打开"
+  fi
   return 0
 }
 
 sbx_menu_main() {
   local choice need_self=0
-  # 临时文件第一次运行：问要不要装成 sbx 命令（装过就不问了）
+  # 临时文件第一次运行：问要不要装成 sb 命令（装过就不问了）
   if [ "$SBX_EMBEDDED" != "1" ] && [ "$SBX_DRY_RUN" -eq 0 ] && [ ! -f "$SCRIPT_SELF_PATH" ]; then
     need_self=1
   fi
@@ -1945,7 +1951,7 @@ sbx_menu_main() {
   fi
   if [ "$need_self" -eq 1 ]; then
     info "当前是临时文件：$0"
-    if sbx_ask_yn "装成命令 sbx（以后直接输入 sbx 打开）？" y; then
+    if sbx_ask_yn "装成命令 sb（以后直接输入 sb 打开）？" y; then
       sbx_install_self || warn "安装失败，不影响继续使用"
     fi
   fi
@@ -2147,6 +2153,15 @@ sbx_quickstart() {
   return 0
 }
 
+# 保证快捷命令存在（从旧版的 sbx 迁移到 sb 时靠这个自愈）
+sbx_ensure_cmd() {
+  [ "$SBX_DRY_RUN" -eq 1 ] && return 0
+  [ -f "$SCRIPT_SELF_PATH" ] || return 0
+  [ -x "$SBX_CMD_PATH" ] || ln -sf "$SCRIPT_SELF_PATH" "$SBX_CMD_PATH" 2>/dev/null || true
+  [ -L /usr/local/bin/sbx ] && rm -f /usr/local/bin/sbx 2>/dev/null || true
+  return 0
+}
+
 sbx_main() {
   SBX_ARGS=("$@")
   sbx_bootstrap "$@" || true
@@ -2161,6 +2176,7 @@ sbx_main() {
   sbx_check_os || return 1
   sbx_check_deps || return 1
   sbx_layout_init || return 1
+  sbx_ensure_cmd
 
   [ -n "${SBX_ARG_HOST:-}" ] && sbx_server_set public_ip "$SBX_ARG_HOST" >/dev/null 2>&1 || true
 

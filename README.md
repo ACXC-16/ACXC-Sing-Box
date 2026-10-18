@@ -17,7 +17,7 @@
 上传到服务器后：
 
 ```bash
-bash acxc-singbox.sh      # 首次运行可装成 sbx 命令，之后直接输入 sbx
+bash acxc-singbox.sh      # 首次运行可装成 sb 命令，之后直接输入 sb
 ```
 
 ## 状态
