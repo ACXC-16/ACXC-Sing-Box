@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.19"
+SCRIPT_VERSION="0.1.20"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -105,9 +105,10 @@ sbx_term_rows() {
   printf '%s' "$r"
 }
 
-# 算出横向左缩进：整块内容宽约 52 列，居中摆放
+# 横向对齐：默认靠左，只做纵向居中。想整体居中可设 ACXC_SBX_ALIGN=center
 sbx_calc_indent() {
   SBX_IND=""
+  [ "${ACXC_SBX_ALIGN:-left}" = "center" ] || return 0
   [ "$SBX_TTY_OK" -eq 1 ] || return 0
   local cols pad
   cols="$(sbx_term_cols)"
