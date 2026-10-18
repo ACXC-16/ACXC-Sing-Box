@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.9"
+SCRIPT_VERSION="0.1.10"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -1409,7 +1409,7 @@ sbx_cmd_list() {
       "$(sbx_node_get "$name" port)" "$st" "$(sbx_node_get "$name" remark)"
   done
   [ "$n" -eq 0 ] && printf '  （还没有节点，选 2) 添加协议）\n'
-  printf '\n  %s输入编号查看详情%s\n\n' "$C_DIM" "$C_RST"
+  printf '\n  %s输入编号查看详情，直接回车返回%s\n\n' "$C_DIM" "$C_RST"
   return 0
 }
 
@@ -1995,9 +1995,9 @@ sbx_menu_main() {
       0|q|Q|exit|quit) return 0 ;;
       1)
          sbx_cmd_list
-         sbx_prompt "选择" "" || { sbx_pause; continue; }
+         sbx_prompt "选择" "" || continue
          case "$SBX_REPLY" in
-           '')  ;;
+           '')  continue ;;   # 直接回车＝返回上级菜单
            *)   if sbx_resolve_node "$SBX_REPLY"; then sbx_show_node "$SBX_REPLY"
                 else warn "找不到节点：$SBX_REPLY"; fi ;;
          esac
@@ -2006,6 +2006,7 @@ sbx_menu_main() {
       3) sbx_cmd_del; sbx_pause ;;
       4) sbx_cmd_list
          sbx_prompt "要改端口的编号/名字" "" || continue
+         [ -n "$SBX_REPLY" ] || continue
          sbx_resolve_node "$SBX_REPLY" || { err "找不到节点"; sbx_pause; continue; }
          local n="$SBX_REPLY"
          sbx_prompt "新端口" "$(sbx_node_get "$n" port)" || continue
