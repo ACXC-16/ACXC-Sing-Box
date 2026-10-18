@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.27"
+SCRIPT_VERSION="0.1.28"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -331,13 +331,12 @@ sbx_gen_password() {
 }
 
 sbx_gen_uuid() {
-  if [ -x "$SBX_BIN" ] && "$SBX_BIN" generate uuid >/dev/null 2>&1; then
-    "$SBX_BIN" generate uuid 2>/dev/null
-    return 0
-  fi
   if [ -r /proc/sys/kernel/random/uuid ]; then
     cat /proc/sys/kernel/random/uuid
     return 0
+  fi
+  if [ -x "$SBX_BIN" ]; then
+    "$SBX_BIN" generate uuid 2>/dev/null && return 0
   fi
   return 1
 }
@@ -450,11 +449,14 @@ sbx_svc_active() { systemctl is-active --quiet sing-box 2>/dev/null; }
 
 sbx_sb_installed() { [ -x "$SBX_BIN" ]; }
 
+SBX_SB_VER_CACHE=""
 sbx_sb_version() {
   [ -x "$SBX_BIN" ] || return 1
+  if [ -n "$SBX_SB_VER_CACHE" ]; then printf '%s' "$SBX_SB_VER_CACHE"; return 0; fi
   local v
   v="$("$SBX_BIN" version 2>/dev/null | head -1 | awk '{print $NF}')"
   [ -n "$v" ] || return 1
+  SBX_SB_VER_CACHE="$v"
   printf '%s' "$v"
 }
 
@@ -581,11 +583,58 @@ sbx_host_for() {
 sbx_node_file() { printf '%s/%s.json' "$SBX_NODES" "$1"; }
 sbx_node_exists() { [ -f "$(sbx_node_file "$1")" ]; }
 
-sbx_node_get() { # $1=名字 $2=键
-  local f
-  f="$(sbx_node_file "$1")"
+# 读一个字段。state 是我们自己用 jq -n 生成的扁平 JSON（两空格缩进、一键一行），
+# 纯 bash 就能解析——以前每次读字段都起一个 jq 进程，是卡的主要原因。
+declare -A SBX_NV=()
+SBX_NODE_CACHE_ENABLED=0
+# 按文件路径读一个字段（渲染器用这个，因为它拿到的是任意 state 文件路径）
+sbx_file_get() { # $1=文件 $2=键
+  local f="$1" key="$2" line v
   [ -r "$f" ] || return 1
-  jq -r --arg k "$2" '.[$k] // empty' "$f" 2>/dev/null
+  while IFS= read -r line; do
+    case "$line" in
+      "  \"$key\":"*)
+        v="${line#*: }"
+        v="${v%$'\r'}"
+        v="${v%,}"
+        v="${v#\"}"; v="${v%\"}"
+        printf '%s' "$v"
+        return 0 ;;
+    esac
+  done <"$f"
+  # 兜底：不是我们生成的多行格式（手工改过 / 单行 JSON），交给 jq
+  [ -n "${ACXC_SBX_NO_JQ_FALLBACK:-}" ] && return 1
+  if command -v jq >/dev/null 2>&1; then
+    v="$(jq -r --arg k "$key" '.[$k] // empty' "$f" 2>/dev/null)"
+    [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+  fi
+  return 1
+}
+
+sbx_node_get() { # $1=名字 $2=键 → 值；文件或键不存在返回 1
+  local key="$2"
+  if [ "$SBX_NODE_CACHE_ENABLED" = "1" ] && [ -n "${SBX_NV["$1.$key"]+x}" ]; then
+    printf '%s' "${SBX_NV["$1.$key"]}"
+    return 0
+  fi
+  sbx_file_get "$SBX_NODES/$1.json" "$key"
+}
+
+# 一次把某个节点的所有字段读进内存（一屏几十次读文件换成一次）
+sbx_node_load() { # $1=名字
+  local f="$SBX_NODES/$1.json" line k v
+  [ -r "$f" ] || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      '  "'*'":'*)
+        k="${line#  \"}"; k="${k%%\":*}"
+        [ -n "$k" ] || continue
+        v="${line#*: }"; v="${v%$'\r'}"; v="${v%,}"; v="${v#\"}"; v="${v%\"}"
+        SBX_NV["$1.$k"]="$v" ;;
+    esac
+  done <"$f"
+  SBX_NODE_CACHE_ENABLED=1
+  return 0
 }
 
 sbx_node_set() { # $1=名字 $2=键 $3=值
@@ -603,8 +652,15 @@ sbx_node_names() {
   local f created name
   for f in "$SBX_NODES"/*.json; do
     [ -e "$f" ] || continue
-    name="$(basename "$f" .json)"
-    created="$(jq -r '.created // ""' "$f" 2>/dev/null)"
+    name="${f##*/}"; name="${name%.json}"
+    created=""
+    while IFS= read -r raw; do
+      case "$raw" in
+        '  "created":'*)
+          created="${raw#*: }"; created="${created%$'\r'}"; created="${created%,}"
+          created="${created#\"}"; created="${created%\"}"; break ;;
+      esac
+    done <"$f"
     # 没有 created 的老节点按文件修改时间兜底
     [ -n "$created" ] || created="$(date -r "$f" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '9999')"
     printf '%s\t%s\n' "$created" "$name"
@@ -671,12 +727,26 @@ sbx_ss_check() {
 }
 
 sbx_port_in_use() { # $1=端口 $2=net
-  local p="$1" net="${2:-both}" f n nnet
+  local p="$1" net="${2:-both}" f line n="" nproto="" nnet=""
   for f in "$SBX_NODES"/*.json; do
     [ -e "$f" ] || continue
-    n="$(jq -r '.port // empty' "$f" 2>/dev/null)"
+    n=""; nproto=""
+    while IFS= read -r line; do
+      case "$line" in
+        '  "port":'*)  n="${line#*: }"; n="${n%$'\r'}"; n="${n%,}" ;;
+        '  "proto":'*) nproto="${line#*: }"; nproto="${nproto%$'\r'}"; nproto="${nproto#\"}"; nproto="${nproto%\"}" ;;
+      esac
+    done <"$f"
+    if [ -z "$n" ] && command -v jq >/dev/null 2>&1; then
+      n="$(jq -r '.port // empty' "$f" 2>/dev/null)"
+      nproto="$(jq -r '.proto // empty' "$f" 2>/dev/null)"
+    fi
     [ "$n" = "$p" ] || continue
-    nnet="$(sbx_proto_net "$(jq -r '.proto // ""' "$f" 2>/dev/null)")"
+    case "$nproto" in
+      hysteria2)   nnet="udp" ;;
+      shadowsocks) nnet="both" ;;
+      *)           nnet="tcp" ;;
+    esac
     sbx_net_overlap "$net" "$nnet" && return 0
   done
   case "$net" in
@@ -804,13 +874,16 @@ sbx_add_tls_proto() { # $1=proto $2=名字 $3=端口 $4=sni $5=备注 $6=crt $7=
 # ============================== 渲染：state → conf.d ========================
 # 一个节点一个文件；文件名 in-<名字>.json
 sbx_render_reality() { # $1=state 文件 $2=tag $3=端口
-  local f="$1" tag="$2" port="$3"
+  local f="$1" tag="$2" port="$3" name="${2#in-}" uuid flow sni pk sid
+  sbx_node_load "$name" >/dev/null 2>&1 || true
+  uuid="$(sbx_file_get "$f" uuid)"
+  flow="$(sbx_file_get "$f" flow)"; [ -n "$flow" ] || flow="xtls-rprx-vision"
+  sni="$(sbx_file_get "$f" sni)"
+  pk="$(sbx_file_get "$f" private_key)"
+  sid="$(sbx_file_get "$f" short_id)"
   jq -n --arg tag "$tag" --argjson port "$port" \
-    --arg uuid "$(jq -r '.uuid' "$f")" \
-    --arg flow "$(jq -r '.flow // "xtls-rprx-vision"' "$f")" \
-    --arg sni "$(jq -r '.sni' "$f")" \
-    --arg pk "$(jq -r '.private_key' "$f")" \
-    --arg sid "$(jq -r '.short_id' "$f")" \
+    --arg uuid "$uuid" --arg flow "$flow" --arg sni "$sni" \
+    --arg pk "$pk" --arg sid "$sid" \
     '{inbounds:[{
         type:"vless", tag:$tag, listen:"::", listen_port:$port,
         users:[{uuid:$uuid, flow:$flow}],
@@ -824,21 +897,24 @@ sbx_render_ss() {
   local f="$1" tag="$2" port="$3"
   # 注意：不要写 network:"tcp,udp"。sing-box 不认这种逗号写法（会报 unknown network），
   # 省略 network 字段时默认就是 tcp+udp，跟我们要的行为一致。
+  local name="${tag#in-}" m pw
+  m="$(sbx_file_get "$f" method)"
+  pw="$(sbx_file_get "$f" password)"
   jq -n --arg tag "$tag" --argjson port "$port" \
-    --arg m "$(jq -r '.method' "$f")" \
-    --arg pw "$(jq -r '.password' "$f")" \
+    --arg m "$m" --arg pw "$pw" \
     '{inbounds:[{type:"shadowsocks", tag:$tag, listen:"::", listen_port:$port,
                  method:$m, password:$pw}]}'
 }
 
 sbx_render_hy2() {
-  local f="$1" tag="$2" port="$3" sni
-  sni="$(jq -r '.sni' "$f")"
+  local f="$1" tag="$2" port="$3" name="${2#in-}" sni pw crt key
+  sbx_node_load "$name" >/dev/null 2>&1 || true
+  sni="$(sbx_file_get "$f" sni)"
+  pw="$(sbx_file_get "$f" password)"
+  crt="$(sbx_file_get "$f" cert_path)"
+  key="$(sbx_file_get "$f" key_path)"
   jq -n --arg tag "$tag" --argjson port "$port" \
-    --arg pw "$(jq -r '.password' "$f")" \
-    --arg sni "$sni" \
-    --arg crt "$(jq -r '.cert_path' "$f")" \
-    --arg key "$(jq -r '.key_path' "$f")" \
+    --arg pw "$pw" --arg sni "$sni" --arg crt "$crt" --arg key "$key" \
     --arg masq "https://$sni/" \
     '{inbounds:[{type:"hysteria2", tag:$tag, listen:"::", listen_port:$port,
                  users:[{password:$pw}],
@@ -849,11 +925,14 @@ sbx_render_hy2() {
 
 sbx_render_trojan() {
   local f="$1" tag="$2" port="$3"
+  local name="${tag#in-}" pw sni crt key
+  sbx_node_load "$name" >/dev/null 2>&1 || true
+  pw="$(sbx_file_get "$f" password)"
+  sni="$(sbx_file_get "$f" sni)"
+  crt="$(sbx_file_get "$f" cert_path)"
+  key="$(sbx_file_get "$f" key_path)"
   jq -n --arg tag "$tag" --argjson port "$port" \
-    --arg pw "$(jq -r '.password' "$f")" \
-    --arg sni "$(jq -r '.sni' "$f")" \
-    --arg crt "$(jq -r '.cert_path' "$f")" \
-    --arg key "$(jq -r '.key_path' "$f")" \
+    --arg pw "$pw" --arg sni "$sni" --arg crt "$crt" --arg key "$key" \
     '{inbounds:[{type:"trojan", tag:$tag, listen:"::", listen_port:$port,
                  users:[{password:$pw}],
                  tls:{enabled:true, server_name:$sni,
@@ -930,9 +1009,9 @@ sbx_wait_port() {
   local p="$1" proto="${2:-tcp}" i=0
   [ "$SBX_DRY_RUN" -eq 1 ] && return 0
   sbx_have ss || return 0
-  while [ "$i" -lt 15 ]; do
+  while [ "$i" -lt 20 ]; do
     sbx_ss_check "$proto" "$p" && return 0
-    sleep 1
+    sleep 0.3
     i=$((i + 1))
   done
   return 1
@@ -1016,10 +1095,11 @@ sbx_apply() { # $1=说明 $2=期望监听的端口（可空）$3=tcp|udp
 sbx_link_node() { # $1=名字 → stdout
   local name="$1" proto host port remark hop
   sbx_node_exists "$name" || return 1
-  proto="$(sbx_node_get "$name" proto)"
-  port="$(sbx_node_get "$name" port)"
-  remark="$(sbx_node_get "$name" remark)"
-  hop="$(sbx_node_get "$name" hop)"
+  sbx_node_load "$name" >/dev/null 2>&1 || true
+  proto="${SBX_NV["$name.proto"]-}"
+  port="${SBX_NV["$name.port"]-}"
+  remark="${SBX_NV["$name.remark"]-}"
+  hop="${SBX_NV["$name.hop"]-}"
   host="$(sbx_host_for "$name")" || { err "拿不到公网 IP，请用 --host 指定"; return 1; }
   [ -n "$remark" ] || remark="$name"
   local h url_h
@@ -1027,13 +1107,13 @@ sbx_link_node() { # $1=名字 → stdout
   case "$proto" in
     reality)
       printf 'vless://%s@%s:%s?encryption=none&flow=%s&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&headerType=none#%s' \
-        "$(sbx_node_get "$name" uuid)" "$url_h" "$port" \
-        "$(sbx_node_get "$name" flow)" "$(sbx_node_get "$name" sni)" \
-        "$(sbx_node_get "$name" public_key)" "$(sbx_node_get "$name" short_id)" "$remark"
+        "${SBX_NV["$name.uuid"]-}" "$url_h" "$port" \
+        "${SBX_NV["$name.flow"]-}" "${SBX_NV["$name.sni"]-}" \
+        "${SBX_NV["$name.public_key"]-}" "${SBX_NV["$name.short_id"]-}" "$remark"
       ;;
     shadowsocks)
       local ui
-      ui="$(printf '%s:%s' "$(sbx_node_get "$name" method)" "$(sbx_node_get "$name" password)" \
+      ui="$(printf '%s:%s' "${SBX_NV["$name.method"]-}" "${SBX_NV["$name.password"]-}" \
             | base64 -w0 2>/dev/null | tr '+/' '-_' | tr -d '=')"
       printf 'ss://%s@%s:%s#%s' "$ui" "$url_h" "$port" "$remark"
       ;;
@@ -1041,8 +1121,8 @@ sbx_link_node() { # $1=名字 → stdout
       local extra=""
       [ -n "$hop" ] && extra="&mport=$hop"
       printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1%s#%s' \
-        "$(sbx_node_get "$name" password)" "$url_h" "$port" \
-        "$(sbx_node_get "$name" sni)" "$extra" "$remark"
+        "${SBX_NV["$name.password"]-}" "$url_h" "$port" \
+        "${SBX_NV["$name.sni"]-}" "$extra" "$remark"
       ;;
     trojan)
       printf 'trojan://%s@%s:%s?security=tls&sni=%s&insecure=1&type=tcp#%s' \
@@ -1504,10 +1584,11 @@ sbx_cmd_list() { # $1=页脚提示（可空）
   sbx_padv c4 "端口" 7; sbx_padv c5 "状态" 8
   printf '%s  %s %s %s %s %s 备注\n' "${SBX_IND-}" "$c1" "$c2" "$c3" "$c4" "$c5"
   printf '%s  %s\n' "${SBX_IND-}" "──────────────────────────────────────────────────────────────────────────"
+  local st="停止"
+  sbx_svc_active && st="运行"
   for name in $(sbx_node_names); do
+    sbx_node_load "$name" >/dev/null 2>&1 || true
     i=$((i + 1)); n=$((n + 1))
-    local st="停止"
-    sbx_svc_active && st="运行"
     sbx_padv c1 "$i" 4
     sbx_padv c2 "$name" 22
     sbx_padv c3 "$(sbx_proto_label "$(sbx_node_get "$name" proto)")" 32
@@ -1538,6 +1619,7 @@ sbx_resolve_node() {
 # 单个节点的字段与分享链接（不含 logo 头部，供单看/多看好复用）
 sbx_node_detail() {
   local name="$1" link
+  sbx_node_load "$name" >/dev/null 2>&1 || true
   sbx_kv "协议" "$(sbx_proto_label "$(sbx_node_get "$name" proto)")"
   sbx_kv "端口" "$(sbx_node_get "$name" port)"
   sbx_kv "备注" "$(sbx_node_get "$name" remark)"
