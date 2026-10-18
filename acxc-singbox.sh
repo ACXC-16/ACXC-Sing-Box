@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.3"
+SCRIPT_VERSION="0.1.4"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -1396,7 +1396,7 @@ sbx_cmd_list() {
       "$(sbx_node_get "$name" port)" "$st" "$(sbx_node_get "$name" remark)"
   done
   [ "$n" -eq 0 ] && printf '  （还没有节点，选 2) 添加协议）\n'
-  printf '\n  %s输入编号看详情，输入 c 生成 Clash 配置%s\n\n' "$C_DIM" "$C_RST"
+  printf '\n  %s输入编号查看详情%s\n\n' "$C_DIM" "$C_RST"
   return 0
 }
 
@@ -1953,7 +1953,6 @@ sbx_menu_main() {
          sbx_prompt "选择" "" || { sbx_pause; continue; }
          case "$SBX_REPLY" in
            '')  ;;
-           c|C) sbx_cmd_sub clash ;;
            *)   if sbx_resolve_node "$SBX_REPLY"; then sbx_show_node "$SBX_REPLY"
                 else warn "找不到节点：$SBX_REPLY"; fi ;;
          esac
