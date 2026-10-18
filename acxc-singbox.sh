@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.25"
+SCRIPT_VERSION="0.1.26"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -1585,7 +1585,7 @@ sbx_show_nodes() {
   for name in "${list[@]}"; do
     k=$((k + 1))
     [ "$k" -gt 1 ] && printf '\n'
-    printf '%s  %s%s%s\n' "${SBX_IND-}" "$C_BLD" "$name" "$C_RST"
+    printf '%s  %s%s%s%s\n' "${SBX_IND-}" "$C_BLD" "$C_YEL" "$name" "$C_RST"
     sbx_node_detail "$name"
   done
   return 0
