@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.14"
+SCRIPT_VERSION="0.1.15"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -1714,14 +1714,14 @@ sbx_cmd_service() { # $1=start|stop|restart|reload|status
 }
 
 sbx_status_line() {
-  local ver="未安装" st="未运行" c=0
+  local ver="未安装" st="未运行" sc="$C_YEL" c=0
   if sbx_sb_installed; then
     ver="$(sbx_sb_version 2>/dev/null)" || ver="?"
-    if sbx_svc_active; then st="运行中"; else st="已停止"; fi
+    if sbx_svc_active; then st="运行中"; sc="$C_GRN"; else st="已停止"; sc="$C_RED"; fi
   fi
   c="$(sbx_node_count)"
-  printf '  %sv%s · sing-box %s · %s · %s 个节点%s\n' \
-    "$C_DIM" "$SCRIPT_VERSION" "$ver" "$st" "$c" "$C_RST"
+  printf '  %sv%s%s · sing-box %s · %s%s%s · %s 个节点\n' \
+    "$C_DIM" "$SCRIPT_VERSION" "$C_RST" "$ver" "$sc" "$st" "$C_RST" "$c"
 }
 
 sbx_cmd_info() {
@@ -1983,21 +1983,50 @@ SBX_BANNER=""
 sbx_build_banner() {
   [ -n "$SBX_BANNER" ] && return 0
   local nl=$'\n' art=""
-  art="${art} █████   █████  ██   ██  █████ ${nl}"
-  art="${art}██   ██ ██       ██ ██  ██     ${nl}"
-  art="${art}███████ ██        ███   ██     ${nl}"
-  art="${art}██   ██ ██       ██ ██  ██     ${nl}"
-  art="${art}██   ██  █████  ██   ██  █████ ${nl}"
-  SBX_BANNER="${art}${nl}"
+  art="${art}   █████   █████  ██   ██  █████ ${nl}"
+  art="${art}  ██   ██ ██       ██ ██  ██     ${nl}"
+  art="${art}  ███████ ██        ███   ██     ${nl}"
+  art="${art}  ██   ██ ██       ██ ██  ██     ${nl}"
+  art="${art}  ██   ██  █████  ██   ██  █████ ${nl}"
+  SBX_BANNER="${art}"
+  return 0
+}
+
+# 主菜单项目（顺序即编号，和下面的 case 一一对应）
+SBX_MENU_ITEMS=(
+  "查看节点配置"
+  "添加协议"
+  "删除协议"
+  "修改协议端口"
+  "HY2 端口跳跃"
+  "节点信息"
+  "启动服务"
+  "停止服务"
+  "重启服务"
+  "查看运行日志"
+  "更新 sing-box"
+  "更新脚本"
+  "卸载"
+)
+
+# 渲染菜单列表：编号右对齐，第 5、9 项后面空一行做视觉分组
+sbx_menu_list() {
+  local i=0 item
+  for item in "${SBX_MENU_ITEMS[@]}"; do
+    i=$((i + 1))
+    printf '   %s%2d)%s %s\n' "$C_GRN" "$i" "$C_RST" "$item"
+    case "$i" in 5|9) printf '\n' ;; esac
+  done
   return 0
 }
 
 sbx_banner() {
   sbx_build_banner
   printf '%s' "${C_BLD}${C_CYN}${SBX_BANNER}${C_RST}"
-  printf '  %s%sACXC-SINGBOX%s  %ssing-box 协议管理%s\n' "$C_BLD" "$C_CYN" "$C_RST" "$C_DIM" "$C_RST"
+  printf '\n  %s%sACXC-SINGBOX%s  %ssing-box 协议管理%s\n' \
+    "$C_BLD" "$C_CYN" "$C_RST" "$C_DIM" "$C_RST"
   sbx_status_line
-  printf '\n'
+  printf '  %s──────────────────────────────────────────────%s\n\n' "$C_DIM" "$C_RST"
 }
 
 # 把当前这份脚本装到标准位置，并建一个 sb 快捷命令
@@ -2048,22 +2077,9 @@ sbx_menu_main() {
     sbx_clear
     sbx_banner
     sbx_check_update_quiet
-    printf '  %s操作菜单%s\n' "$C_BLD" "$C_RST"
-    printf '   %s1)%s 查看节点配置\n' "$C_GRN" "$C_RST"
-    printf '   %s2)%s 添加协议\n' "$C_GRN" "$C_RST"
-    printf '   %s3)%s 删除协议\n' "$C_GRN" "$C_RST"
-    printf '   %s4)%s 修改协议端口\n' "$C_GRN" "$C_RST"
-    printf '   %s5)%s HY2 端口跳跃\n' "$C_GRN" "$C_RST"
-    printf '   %s6)%s 节点信息\n' "$C_GRN" "$C_RST"
-    printf '   %s7)%s 启动服务\n' "$C_GRN" "$C_RST"
-    printf '   %s8)%s 停止服务\n' "$C_GRN" "$C_RST"
-    printf '   %s9)%s 重启服务\n' "$C_GRN" "$C_RST"
-    printf '  %s10)%s 查看运行日志\n' "$C_GRN" "$C_RST"
-    printf '  %s11)%s 更新 sing-box\n' "$C_GRN" "$C_RST"
-    printf '  %s12)%s 更新脚本\n' "$C_GRN" "$C_RST"
-    printf '  %s13)%s 卸载\n' "$C_GRN" "$C_RST"
-    printf '   %s0)%s 退出\n' "$C_DIM" "$C_RST"
-    printf '\n'
+    printf '  %s操作菜单%s\n\n' "$C_BLD" "$C_RST"
+    sbx_menu_list
+    printf '\n   %s 0)%s 退出\n\n' "$C_DIM" "$C_RST"
     sbx_prompt "请选择（0-13）" "" || return 0
     choice="$SBX_REPLY"
     printf '\n'
