@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.5"
+SCRIPT_VERSION="0.1.6"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -1754,14 +1754,50 @@ sbx_cmd_log() {
 }
 
 # ============================== 脚本自更新 ==================================
+# 找一个含有本脚本的 git 仓库（默认 /opt/ACXC-Sing-Box）
+sbx_repo_dir() {
+  local d own own_dir
+  for d in "${ACXC_SBX_REPO:-}" /opt/ACXC-Sing-Box; do
+    [ -n "$d" ] || continue
+    [ -d "$d/.git" ] && { printf '%s' "$d"; return 0; }
+  done
+  own="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+  own_dir="$(dirname "$own")"
+  [ -d "$own_dir/.git" ] && { printf '%s' "$own_dir"; return 0; }
+  return 1
+}
+
+# 从本地 git 仓库更新：git pull 之后把仓库里的脚本装到标准位置
+sbx_update_from_git() {
+  local repo
+  repo="$(sbx_repo_dir)" || return 1
+  info "从本地仓库更新：$repo"
+  if [ "$SBX_DRY_RUN" -eq 1 ]; then
+    info "[dry-run] git -C $repo pull --ff-only"
+    return 0
+  fi
+  if ! git -C "$repo" pull --ff-only 2>&1 | sed 's/^/    /'; then
+    err "git pull 失败（本地有未提交改动？或网络不通）"
+    return 1
+  fi
+  [ -f "$repo/acxc-singbox.sh" ] || { err "仓库里找不到 acxc-singbox.sh"; return 1; }
+  sbx_cmd_update_script "$repo/acxc-singbox.sh"
+}
+
 sbx_cmd_update_script() { # $1=本地文件或 URL（可空 → 用 SCRIPT_UPDATE_URL）
   local src="${1:-$SCRIPT_UPDATE_URL}" tmp own newv oldv
   own="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
   oldv="$SCRIPT_VERSION"
   if [ -z "$src" ]; then
-    warn "还没有配置更新源（SCRIPT_UPDATE_URL 为空）"
-    info "用法：bash $0 --update-script /path/to/new.sh     # 本地文件"
-    info "或者把地址填进脚本顶部的 SCRIPT_UPDATE_URL，之后就能自动检查"
+    # 没配 URL：先试本地 git 仓库（你现在就是这种：脚本在 /opt/ACXC-Sing-Box 里）
+    if sbx_have git && sbx_repo_dir >/dev/null 2>&1; then
+      sbx_update_from_git
+      return $?
+    fi
+    warn "没有找到更新源"
+    info "方式一：把仓库克隆到 /opt/ACXC-Sing-Box，之后这里就能一键 git pull"
+    info "方式二：bash $0 --update-script /path/to/new.sh"
+    info "方式三：把地址填进脚本顶部的 SCRIPT_UPDATE_URL"
     return 1
   fi
   tmp="$(mktemp)" || return 1
@@ -1794,6 +1830,12 @@ sbx_cmd_update_script() { # $1=本地文件或 URL（可空 → 用 SCRIPT_UPDAT
   if [ "$SBX_DRY_RUN" -eq 1 ]; then
     info "[dry-run] 将把 $own 更新为 v${newv:-?}"
     rm -f "$tmp"; return 0
+  fi
+  # 安装位置是软链（指向仓库）时不用覆盖，git pull 已经生效
+  if [ -L "$SCRIPT_SELF_PATH" ]; then
+    info "安装位置是软链，已跟着仓库更新（重新运行生效）"
+    rm -f "$tmp"
+    return 0
   fi
   [ -f "$own" ] && cp -a "$own" "${own}.bak" 2>/dev/null
   mkdir -p "$(dirname "$SCRIPT_SELF_PATH")" 2>/dev/null || true
