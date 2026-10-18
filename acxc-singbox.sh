@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.15"
+SCRIPT_VERSION="0.1.16"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -99,7 +99,31 @@ fi
 
 sbx_die() { err "$*"; return 1; }
 sbx_title() { printf '\n%s\n' "  ${C_BLD}${C_CYN}==== $* ====${C_RST}"; _sbx_log TITLE "==== $* ===="; }
-sbx_kv() { printf '  %-18s %s\n' "$1" "$2"; }
+
+# 计算显示宽度（中文/全角按 2 列算）→ SBX_DW
+SBX_DW=0
+sbx_dw() {
+  local s="$1" save_lc="${LC_ALL-}" ascii=""
+  LC_ALL=C
+  ascii="${s//[! -~]/}"
+  SBX_DW=$(( ${#ascii} + ((${#s} - ${#ascii}) / 3) * 2 ))
+  if [ -n "$save_lc" ]; then LC_ALL="$save_lc"; else unset LC_ALL; fi
+}
+
+# 按"显示列"补齐到指定宽度 → 结果放 $1 指定的变量（不能用 $( ) 取，尾部空格会被吃掉）
+sbx_padv() { # $1=变量名 $2=文本 $3=宽度
+  local n
+  sbx_dw "$2"
+  n=$(( $3 - SBX_DW ))
+  [ "$n" -lt 0 ] && n=0
+  printf -v "$1" '%s%*s' "$2" "$n" ""
+}
+
+sbx_kv() { # $1=标签 $2=值（按显示宽度对齐，中文标签也不会歪）
+  local k
+  sbx_padv k "$1" 16
+  printf '  %s %s\n' "$k" "$2"
+}
 sbx_have() { command -v "$1" >/dev/null 2>&1; }
 
 # 干跑：只打印不执行
@@ -1398,17 +1422,22 @@ sbx_cmd_update_singbox() {
 
 # ============================== 节点：命令 ==================================
 sbx_cmd_list() {
-  local name i=0 n=0
-  sbx_title "节点列表"
-  printf '  %-4s %-12s %-32s %-7s %-8s %s\n' "编号" "名字" "协议" "端口" "状态" "备注"
-  printf '  %s\n' "--------------------------------------------------------------------------"
+  local name i=0 n=0 c1 c2 c3 c4 c5
+  sbx_screen_header "节点列表"
+  sbx_padv c1 "编号" 4; sbx_padv c2 "名字" 22; sbx_padv c3 "协议" 32
+  sbx_padv c4 "端口" 7; sbx_padv c5 "状态" 8
+  printf '  %s %s %s %s %s 备注\n' "$c1" "$c2" "$c3" "$c4" "$c5"
+  printf '  %s\n' "──────────────────────────────────────────────────────────────────────────"
   for name in $(sbx_node_names); do
     i=$((i + 1)); n=$((n + 1))
     local st="停止"
     sbx_svc_active && st="运行"
-    printf '  %-4s %-12s %-32s %-7s %-8s %s\n' \
-      "$i" "$name" "$(sbx_proto_label "$(sbx_node_get "$name" proto)")" \
-      "$(sbx_node_get "$name" port)" "$st" "$(sbx_node_get "$name" remark)"
+    sbx_padv c1 "$i" 4
+    sbx_padv c2 "$name" 22
+    sbx_padv c3 "$(sbx_proto_label "$(sbx_node_get "$name" proto)")" 32
+    sbx_padv c4 "$(sbx_node_get "$name" port)" 7
+    sbx_padv c5 "$st" 8
+    printf '  %s %s %s %s %s %s\n' "$c1" "$c2" "$c3" "$c4" "$c5" "$(sbx_node_get "$name" remark)"
   done
   [ "$n" -eq 0 ] && printf '  （还没有节点，选 2) 添加协议）\n'
   printf '\n  %s输入编号查看详情，直接回车返回上级菜单%s\n\n' "$C_DIM" "$C_RST"
@@ -1432,7 +1461,7 @@ sbx_resolve_node() {
 
 sbx_show_node() {
   local name="$1" link
-  sbx_title "节点：$name"
+  sbx_screen_header "节点：$name"
   sbx_kv "协议" "$(sbx_proto_label "$(sbx_node_get "$name" proto)")"
   sbx_kv "端口" "$(sbx_node_get "$name" port)"
   sbx_kv "备注" "$(sbx_node_get "$name" remark)"
@@ -1469,7 +1498,7 @@ sbx_cmd_add() {
   fi
   [ -n "${SBX_PROTO_HINT:-}" ] && proto="$SBX_PROTO_HINT"
   if [ -z "${proto:-}" ]; then
-    sbx_title "添加协议"
+    sbx_screen_header "添加协议"
     printf '  %s1)%s %-32s%s（无需域名，推荐）%s\n' "$C_GRN" "$C_RST" "VLESS+TCP+XTLS Vision+Reality" "$C_DIM" "$C_RST"
     printf '  %s2)%s %-32s%s（UDP，抗丢包）%s\n' "$C_GRN" "$C_RST" "Hysteria2" "$C_DIM" "$C_RST"
     printf '  %s3)%s %-32s%s（兼容性最好）%s\n' "$C_GRN" "$C_RST" "Shadowsocks 2022" "$C_DIM" "$C_RST"
@@ -1581,6 +1610,7 @@ sbx_cmd_add() {
 
 sbx_cmd_del() { # $1=编号/名字，空格或逗号分隔；a=全部
   local arg="${1:-}" name
+  sbx_screen_header "删除协议"
   if [ -z "$arg" ]; then
     sbx_cmd_list
     info "多个用空格分隔，例如 1 2 3；输入 a 删除全部"
@@ -1726,7 +1756,7 @@ sbx_status_line() {
 
 sbx_cmd_info() {
   local ip="" h
-  sbx_title "节点信息"
+  sbx_screen_header "节点信息"
   sbx_kv "系统" "$(sbx_os_pretty)"
   sbx_kv "内核" "$(uname -r)"
   sbx_kv "架构" "$(uname -m)"
@@ -1757,6 +1787,7 @@ sbx_cmd_info() {
 
 sbx_cmd_log() {
   local n="${1:-40}"
+  sbx_screen_header "运行日志"
   if sbx_have journalctl; then
     printf '%s\n' "${C_BLD}最近 ${n} 行（journalctl -u sing-box）：${C_RST}"
     journalctl -u sing-box -n "$n" --no-pager 2>/dev/null || true
@@ -1956,7 +1987,7 @@ sbx_check_update_quiet() {
 sbx_cmd_uninstall() {
   local purge=0
   [ "${1:-}" = "--purge" ] && purge=1
-  sbx_title "卸载"
+  sbx_screen_header "卸载"
   printf '  这会：停止并删除 sing-box 服务、二进制、/etc/sing-box 配置\n'
   [ "$purge" -eq 1 ] && printf '  另外删除全部节点数据（/etc/acxc-singbox）\n' \
                      || printf '  节点数据会保留在 %s（加 --purge 才删）\n' "$SBX_DATA"
@@ -2029,6 +2060,21 @@ sbx_banner() {
   printf '  %s──────────────────────────────────────────────%s\n\n' "$C_DIM" "$C_RST"
 }
 
+# 二级界面统一的头部：logo + 标题 + 分隔线。同一屏只画一次，嵌套调用不会重复
+# 只在交互菜单里画；带参数跑命令行时保持纯文本输出
+SBX_SCREEN_STARTED=0
+SBX_IN_MENU=0
+sbx_screen_header() { # $1=标题
+  [ "${SBX_IN_MENU:-0}" = "1" ] || return 0
+  [ "${SBX_SCREEN_STARTED:-0}" = "1" ] && return 0
+  SBX_SCREEN_STARTED=1
+  sbx_build_banner
+  printf '%s' "${C_BLD}${C_CYN}${SBX_BANNER}${C_RST}"
+  printf '\n  %s%s%s\n' "$C_BLD" "${1:-}" "$C_RST"
+  printf '  %s──────────────────────────────────────────────%s\n\n' "$C_DIM" "$C_RST"
+  return 0
+}
+
 # 把当前这份脚本装到标准位置，并建一个 sb 快捷命令
 sbx_install_self() {
   local own
@@ -2085,7 +2131,7 @@ sbx_menu_main() {
     printf '\n'
     # 进二级界面前先清屏：主菜单和二级菜单不挤在同一屏
     case "$choice" in
-      1|2|3|4|5|6|10) sbx_clear ;;
+      1|2|3|4|5|6|10) sbx_clear; SBX_IN_MENU=1; SBX_SCREEN_STARTED=0 ;;
     esac
     case "$choice" in
       0|q|Q|exit|quit) return 0 ;;
@@ -2094,13 +2140,16 @@ sbx_menu_main() {
          sbx_prompt "选择" "" || continue
          case "$SBX_REPLY" in
            '')  continue ;;   # 直接回车＝返回上级菜单
-           *)   if sbx_resolve_node "$SBX_REPLY"; then sbx_show_node "$SBX_REPLY"
+           *)   if sbx_resolve_node "$SBX_REPLY"; then
+                  sbx_clear; SBX_IN_MENU=1; SBX_SCREEN_STARTED=0
+                  sbx_show_node "$SBX_REPLY"
                 else warn "找不到节点：$SBX_REPLY"; fi ;;
          esac
          sbx_pause ;;
       2) sbx_cmd_add; sbx_pause ;;
       3) sbx_cmd_del; sbx_pause ;;
-      4) sbx_cmd_list
+      4) sbx_screen_header "修改协议端口"
+         sbx_cmd_list
          sbx_prompt "要改端口的编号/名字" "" || continue
          [ -n "$SBX_REPLY" ] || continue
          sbx_resolve_node "$SBX_REPLY" || { err "找不到节点"; sbx_pause; continue; }
@@ -2123,7 +2172,7 @@ sbx_menu_main() {
 }
 
 sbx_cmd_hop_menu() {
-  sbx_title "HY2 端口跳跃"
+  sbx_screen_header "HY2 端口跳跃"
   sbx_cmd_list
   local hy2="" name
   for name in $(sbx_node_names); do
