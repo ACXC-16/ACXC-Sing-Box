@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.20"
+SCRIPT_VERSION="0.1.21"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -276,6 +276,18 @@ sbx_pause() {
   printf '\n'
   sbx_prompt "按回车继续" "" >/dev/null 2>&1 || true
   return 0
+}
+
+# 动作结束后是否再拦一次"按回车继续"。
+# 二级菜单里"直接回车退回"时置 SBX_BACK=1，这样退回主菜单只需按一次。
+SBX_BACK=0
+sbx_back() { SBX_BACK=1; return 0; }
+sbx_after_action() {
+  if [ "${SBX_BACK:-0}" = "1" ]; then
+    SBX_BACK=0
+    return 0
+  fi
+  sbx_pause
 }
 
 sbx_clear() {
@@ -1569,7 +1581,7 @@ sbx_cmd_add() {
     printf '\n%s  %s直接回车返回上级菜单%s\n\n' "${SBX_IND-}" "$C_DIM" "$C_RST"
     sbx_prompt "请选择协议（1-4）" "" || return 1
     case "$SBX_REPLY" in
-      '') return 0 ;;
+      '') sbx_back; return 0 ;;
       1|reality|vless) proto="reality" ;;
       2|hy2|hysteria2) proto="hysteria2" ;;
       3|ss|shadowsocks) proto="shadowsocks" ;;
@@ -1680,7 +1692,7 @@ sbx_cmd_del() { # $1=编号/名字，空格或逗号分隔；a=全部
     info "多个用空格分隔，例如 1 2 3；输入 a 删除全部"
     sbx_prompt "要删除的编号/名字" "" || return 1
     arg="$SBX_REPLY"
-    [ -n "$arg" ] || return 0
+    [ -n "$arg" ] || { sbx_back; return 0; }
   fi
   if [ "$arg" = "a" ] || [ "$arg" = "A" ]; then
     sbx_ask_yn "确认删除全部节点？" n || { info "已取消"; return 0; }
@@ -2057,7 +2069,7 @@ sbx_cmd_uninstall() {
   [ "$purge" -eq 1 ] && printf '  另外删除全部节点数据（/etc/acxc-singbox）\n' \
                      || printf '  节点数据会保留在 %s（加 --purge 才删）\n' "$SBX_DATA"
   printf '\n'
-  sbx_ask_yn "确认卸载？" n || { info "已取消"; return 0; }
+  sbx_ask_yn "确认卸载？" n || { info "已取消"; sbx_back; return 0; }
   sbx_run systemctl stop sing-box 2>/dev/null || true
   sbx_run systemctl disable sing-box 2>/dev/null || true
   sbx_run systemctl stop singbox-porthop 2>/dev/null || true
@@ -2217,8 +2229,8 @@ sbx_menu_main() {
                 else warn "找不到节点：$SBX_REPLY"; fi ;;
          esac
          sbx_pause ;;
-      2) sbx_cmd_add; sbx_pause ;;
-      3) sbx_cmd_del; sbx_pause ;;
+      2) sbx_cmd_add; sbx_after_action ;;
+      3) sbx_cmd_del; sbx_after_action ;;
       4) sbx_screen_header "修改协议端口"
          sbx_cmd_list "输入要改端口的编号，直接回车返回上级菜单"
          sbx_prompt "要改端口的编号/名字" "" || continue
@@ -2226,16 +2238,16 @@ sbx_menu_main() {
          sbx_resolve_node "$SBX_REPLY" || { err "找不到节点"; sbx_pause; continue; }
          local n="$SBX_REPLY"
          sbx_prompt "新端口" "$(sbx_node_get "$n" port)" || continue
-         sbx_cmd_port "$n" "$SBX_REPLY"; sbx_pause ;;
-      5) sbx_cmd_hop_menu; sbx_pause ;;
-      6) sbx_cmd_info; sbx_pause ;;
-      7) sbx_cmd_service start; sbx_pause ;;
-      8) sbx_cmd_service stop; sbx_pause ;;
-      9) sbx_cmd_service restart; sbx_pause ;;
-      10) sbx_cmd_log 40; sbx_pause ;;
-      11) sbx_cmd_update_singbox; sbx_pause ;;
-      12) sbx_cmd_update_script; sbx_pause ;;
-      13) sbx_cmd_uninstall; sbx_pause ;;
+         sbx_cmd_port "$n" "$SBX_REPLY"; sbx_after_action ;;
+      5) sbx_cmd_hop_menu; sbx_after_action ;;
+      6) sbx_cmd_info; sbx_after_action ;;
+      7) sbx_cmd_service start; sbx_after_action ;;
+      8) sbx_cmd_service stop; sbx_after_action ;;
+      9) sbx_cmd_service restart; sbx_after_action ;;
+      10) sbx_cmd_log 40; sbx_after_action ;;
+      11) sbx_cmd_update_singbox; sbx_after_action ;;
+      12) sbx_cmd_update_script; sbx_after_action ;;
+      13) sbx_cmd_uninstall; sbx_after_action ;;
       *) warn "无效的选择：$choice" ;;
     esac
     SBX_PROTO_HINT=""; SBX_PORT_HINT=""; SBX_SNI_HINT=""; SBX_CERT_HINT=""; SBX_KEY_HINT=""
@@ -2256,7 +2268,7 @@ sbx_cmd_hop_menu() {
   printf '%s  可用的 Hysteria2 节点：%s\n' "${SBX_IND-}" "${hy2# }"
   printf '%s  %s直接回车返回上级菜单%s\n\n' "${SBX_IND-}" "$C_DIM" "$C_RST"
   sbx_prompt "节点编号/名字" "" || return 0
-  [ -n "$SBX_REPLY" ] || return 0
+  [ -n "$SBX_REPLY" ] || { sbx_back; return 0; }
   sbx_resolve_node "$SBX_REPLY" || { err "找不到节点"; return 1; }
   name="$SBX_REPLY"
   local cur; cur="$(sbx_node_get "$name" hop)"
