@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.29"
+SCRIPT_VERSION="0.2.0"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -316,6 +316,11 @@ sbx_proto_short() {
     hysteria2)   printf 'HY2' ;;
     shadowsocks) printf 'SS2022' ;;
     trojan)      printf 'Trojan' ;;
+    anytls)      printf 'AnyTLS' ;;
+    tuic)        printf 'TUIC' ;;
+    snell)       printf 'Snell' ;;
+    socks)       printf 'SOCKS' ;;
+    wireguard)   printf 'WG' ;;
     *)           printf '%s' "$1" ;;
   esac
 }
@@ -331,14 +336,13 @@ sbx_gen_password() {
 }
 
 sbx_gen_uuid() {
-  if [ -r /proc/sys/kernel/random/uuid ]; then
-    cat /proc/sys/kernel/random/uuid
-    return 0
+  local u=""
+  [ -r /proc/sys/kernel/random/uuid ] && u="$(cat /proc/sys/kernel/random/uuid 2>/dev/null)"
+  if [ -z "$u" ] && [ -x "$SBX_BIN" ]; then
+    u="$("$SBX_BIN" generate uuid 2>/dev/null)"
   fi
-  if [ -x "$SBX_BIN" ]; then
-    "$SBX_BIN" generate uuid 2>/dev/null && return 0
-  fi
-  return 1
+  [ -n "$u" ] || return 1
+  printf '%s' "$u"
 }
 
 # 4 字节 short_id（8 位十六进制），Reality 要求是偶数位十六进制、不超过 16 位
@@ -682,6 +686,11 @@ sbx_proto_label() {
     hysteria2)   printf 'Hysteria2' ;;
     shadowsocks) printf 'SS2022' ;;
     trojan)      printf 'Trojan-TLS' ;;
+    anytls)      printf 'AnyTLS' ;;
+    tuic)        printf 'TUIC v5' ;;
+    snell)       printf 'Snell v5' ;;
+    socks)       printf 'SOCKS5' ;;
+    wireguard)   printf 'WireGuard' ;;
     *)           printf '%s' "$1" ;;
   esac
 }
@@ -703,7 +712,7 @@ sbx_next_name() {
 # 同端口不同协议允许共存：443/TCP 的 Reality 和 443/UDP 的 Hysteria2 可以同时开
 sbx_proto_net() {
   case "$1" in
-    hysteria2)   printf 'udp' ;;
+    hysteria2|tuic|wireguard) printf 'udp' ;;
     shadowsocks) printf 'both' ;;
     *)           printf 'tcp' ;;
   esac
@@ -781,16 +790,17 @@ sbx_node_write() { # $1=JSON 文本（stdin 更安全，这里用文件）$2=目
   return 0
 }
 
-# 生成 Reality 密钥对 → stdout "私钥 公钥"
-sbx_reality_keypair() {
-  local out pk pub
+# 用 sing-box 生成密钥对（reality / wg）→ stdout "私钥 公钥"
+sbx_singbox_keypair() { # $1=reality|wg
+  local kind="${1:-reality}" out pk pub
   [ -x "$SBX_BIN" ] || return 1
-  out="$("$SBX_BIN" generate reality-keypair 2>/dev/null)" || return 1
+  out="$("$SBX_BIN" generate "${kind}-keypair" 2>/dev/null)" || return 1
   pk="$(printf '%s\n' "$out" | awk -F': *' 'tolower($1) ~ /private/ {print $2; exit}')"
   pub="$(printf '%s\n' "$out" | awk -F': *' 'tolower($1) ~ /public/ {print $2; exit}')"
   [ -n "$pk" ] && [ -n "$pub" ] || return 1
   printf '%s %s\n' "$pk" "$pub"
 }
+sbx_reality_keypair() { sbx_singbox_keypair reality; }
 
 # 自签证书：$1=节点名 $2=CN/SNI → 生成 crt/key，输出 "crt key" 两个路径
 sbx_self_signed() {
@@ -871,6 +881,99 @@ sbx_add_tls_proto() { # $1=proto $2=名字 $3=端口 $4=sni $5=备注 $6=crt $7=
   return 0
 }
 
+# ---- AnyTLS（TLS 承载，密码认证）------------------------------------------
+sbx_add_anytls() {
+  local name="$1" port="$2" sni="$3" remark="$4" pw pair crt key tmp
+  pw="$(sbx_gen_password 24)" || { err "生成密码失败"; return 1; }
+  pair="$(sbx_self_signed "$name" "$sni")" || { err "自签证书失败"; return 1; }
+  crt="${pair%% *}"; key="${pair##* }"
+  tmp="$(mktemp)" || return 1
+  jq -n --arg n "$name" --argjson p "$port" --arg sni "$sni" --arg r "$remark" \
+        --arg pw "$pw" --arg crt "$crt" --arg key "$key" \
+        --arg ts "$(date '+%Y-%m-%d %H:%M:%S')" \
+    '{schema:1,name:$n,proto:"anytls",remark:$r,port:$p,host:"",hop:"",
+      sni:$sni,password:$pw,cert_path:$crt,key_path:$key,created:$ts,updated:$ts}' \
+    >"$tmp" || { rm -f "$tmp"; return 1; }
+  sbx_node_write "$tmp" "$(sbx_node_file "$name")" || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+  return 0
+}
+
+# ---- TUIC v5（QUIC，UUID+密码）--------------------------------------------
+sbx_add_tuic() {
+  local name="$1" port="$2" sni="$3" remark="$4" uuid pw pair crt key tmp
+  uuid="$(sbx_gen_uuid)" || { err "生成 UUID 失败"; return 1; }
+  pw="$(sbx_gen_password 20)" || { err "生成密码失败"; return 1; }
+  pair="$(sbx_self_signed "$name" "$sni")" || { err "自签证书失败"; return 1; }
+  crt="${pair%% *}"; key="${pair##* }"
+  tmp="$(mktemp)" || return 1
+  jq -n --arg n "$name" --argjson p "$port" --arg sni "$sni" --arg r "$remark" \
+        --arg u "$uuid" --arg pw "$pw" --arg crt "$crt" --arg key "$key" \
+        --arg ts "$(date '+%Y-%m-%d %H:%M:%S')" \
+    '{schema:1,name:$n,proto:"tuic",remark:$r,port:$p,host:"",hop:"",
+      sni:$sni,uuid:$u,password:$pw,cert_path:$crt,key_path:$key,
+      congestion:"bbr",created:$ts,updated:$ts}' \
+    >"$tmp" || { rm -f "$tmp"; return 1; }
+  sbx_node_write "$tmp" "$(sbx_node_file "$name")" || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+  return 0
+}
+
+# ---- Snell v5（Surge 协议，PSK）--------------------------------------------
+sbx_add_snell() {
+  local name="$1" port="$2" remark="$3" psk tmp
+  psk="$(sbx_gen_password 24)" || { err "生成 PSK 失败"; return 1; }
+  tmp="$(mktemp)" || return 1
+  jq -n --arg n "$name" --argjson p "$port" --arg r "$remark" --arg psk "$psk" \
+        --arg ts "$(date '+%Y-%m-%d %H:%M:%S')" \
+    '{schema:1,name:$n,proto:"snell",remark:$r,port:$p,host:"",hop:"",
+      psk:$psk,version:5,obfs:"none",created:$ts,updated:$ts}' \
+    >"$tmp" || { rm -f "$tmp"; return 1; }
+  sbx_node_write "$tmp" "$(sbx_node_file "$name")" || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+  return 0
+}
+
+# ---- SOCKS5（明文代理，必须带账号密码）-------------------------------------
+sbx_add_socks() {
+  local name="$1" port="$2" remark="$3" user pw tmp
+  user="u$(sbx_gen_password 8 | tr 'A-Z' 'a-z')"
+  pw="$(sbx_gen_password 20)" || { err "生成密码失败"; return 1; }
+  tmp="$(mktemp)" || return 1
+  jq -n --arg n "$name" --argjson p "$port" --arg r "$remark" \
+        --arg user "$user" --arg pw "$pw" \
+        --arg ts "$(date '+%Y-%m-%d %H:%M:%S')" \
+    '{schema:1,name:$n,proto:"socks",remark:$r,port:$p,host:"",hop:"",
+      username:$user,password:$pw,created:$ts,updated:$ts}' \
+    >"$tmp" || { rm -f "$tmp"; return 1; }
+  sbx_node_write "$tmp" "$(sbx_node_file "$name")" || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+  return 0
+}
+
+# ---- WireGuard（sing-box 里是 endpoint，不是 inbound）----------------------
+sbx_add_wireguard() {
+  local name="$1" port="$2" remark="$3" ks kc sp cp idx net tmp
+  ks="$(sbx_singbox_keypair wg)" || { err "生成服务端密钥失败"; return 1; }
+  kc="$(sbx_singbox_keypair wg)" || { err "生成客户端密钥失败"; return 1; }
+  sp="${ks%% *}"; cp="${kc%% *}"
+  local s_pub c_priv c_pub
+  s_pub="${ks##* }"; c_priv="${kc%% *}"; c_pub="${kc##* }"
+  idx=$(( $(sbx_node_count) + 1 ))
+  [ "$idx" -gt 254 ] && idx=$(( RANDOM % 200 + 20 ))
+  net="10.66.${idx}"
+  tmp="$(mktemp)" || return 1
+  jq -n --arg n "$name" --argjson p "$port" --arg r "$remark" \
+        --arg sp "$sp" --arg s_pub "$s_pub" --arg cp "$c_priv" --arg c_pub "$c_pub" --arg net "$net" \
+        --arg ts "$(date '+%Y-%m-%d %H:%M:%S')" \
+    '{schema:1,name:$n,proto:"wireguard",remark:$r,port:$p,host:"",hop:"",
+      private_key:$sp,public_key:$s_pub,client_private_key:$cp,client_public_key:$c_pub,
+      wg_net:$net,mtu:1408,created:$ts,updated:$ts}' \
+    >"$tmp" || { rm -f "$tmp"; return 1; }
+  sbx_node_write "$tmp" "$(sbx_node_file "$name")" || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+  return 0
+}
 # ============================== 渲染：state → conf.d ========================
 # 一个节点一个文件；文件名 in-<名字>.json
 sbx_render_reality() { # $1=state 文件 $2=tag $3=端口
@@ -939,6 +1042,64 @@ sbx_render_trojan() {
                       certificate_path:$crt, key_path:$key}}]}'
 }
 
+# ---- 新增协议渲染 ----
+sbx_render_anytls() {
+  local f="$1" tag="$2" port="$3" pw sni crt key
+  pw="$(sbx_file_get "$f" password)"; sni="$(sbx_file_get "$f" sni)"
+  crt="$(sbx_file_get "$f" cert_path)"; key="$(sbx_file_get "$f" key_path)"
+  jq -n --arg tag "$tag" --argjson port "$port" --arg pw "$pw" \
+        --arg sni "$sni" --arg crt "$crt" --arg key "$key" \
+    '{inbounds:[{type:"anytls", tag:$tag, listen:"::", listen_port:$port,
+                 users:[{name:"user", password:$pw}],
+                 tls:{enabled:true, server_name:$sni,
+                      certificate_path:$crt, key_path:$key}}]}'
+}
+
+sbx_render_tuic() {
+  local f="$1" tag="$2" port="$3" uuid pw sni crt key cc
+  uuid="$(sbx_file_get "$f" uuid)"; pw="$(sbx_file_get "$f" password)"
+  sni="$(sbx_file_get "$f" sni)"
+  crt="$(sbx_file_get "$f" cert_path)"; key="$(sbx_file_get "$f" key_path)"
+  cc="$(sbx_file_get "$f" congestion)"; [ -n "$cc" ] || cc="bbr"
+  jq -n --arg tag "$tag" --argjson port "$port" --arg uuid "$uuid" --arg pw "$pw" \
+        --arg sni "$sni" --arg crt "$crt" --arg key "$key" --arg cc "$cc" \
+    '{inbounds:[{type:"tuic", tag:$tag, listen:"::", listen_port:$port,
+                 users:[{name:"user", uuid:$uuid, password:$pw}],
+                 congestion_control:$cc,
+                 tls:{enabled:true, server_name:$sni,
+                      certificate_path:$crt, key_path:$key}}]}'
+}
+
+sbx_render_snell() {
+  local f="$1" tag="$2" port="$3" psk ver
+  psk="$(sbx_file_get "$f" psk)"
+  ver="$(sbx_file_get "$f" version)"; [ -n "$ver" ] || ver=5
+  jq -n --arg tag "$tag" --argjson port "$port" --arg psk "$psk" --argjson ver "$ver" \
+    '{inbounds:[{type:"snell", tag:$tag, listen:"::", listen_port:$port,
+                 version:$ver, psk:$psk}]}'
+}
+
+sbx_render_socks() {
+  local f="$1" tag="$2" port="$3" u pw
+  u="$(sbx_file_get "$f" username)"; pw="$(sbx_file_get "$f" password)"
+  jq -n --arg tag "$tag" --argjson port "$port" --arg u "$u" --arg pw "$pw" \
+    '{inbounds:[{type:"socks", tag:$tag, listen:"::", listen_port:$port,
+                 users:[{username:$u, password:$pw}]}]}'
+}
+
+# WireGuard 是 endpoint，不是 inbound
+sbx_render_wireguard() {
+  local f="$1" tag="$2" port="$3" sk cpk net mtu
+  sk="$(sbx_file_get "$f" private_key)"
+  cpk="$(sbx_file_get "$f" client_public_key)"
+  net="$(sbx_file_get "$f" wg_net)"; [ -n "$net" ] || net="10.66.1"
+  mtu="$(sbx_file_get "$f" mtu)"; [ -n "$mtu" ] || mtu=1408
+  jq -n --arg tag "$tag" --argjson port "$port" --arg sk "$sk" --arg cpk "$cpk" \
+        --arg net "$net" --argjson mtu "$mtu" \
+    '{endpoints:[{type:"wireguard", tag:$tag, address:[($net + ".1/24")], mtu:$mtu,
+                  private_key:$sk, listen_port:$port,
+                  peers:[{public_key:$cpk, allowed_ips:[($net + ".2/32")]}]}]}'
+}
 sbx_render_node() { # $1=名字
   local name="$1" f proto port tag tmp
   f="$(sbx_node_file "$name")"
@@ -953,6 +1114,11 @@ sbx_render_node() { # $1=名字
     shadowsocks) sbx_render_ss      "$f" "$tag" "$port" >"$tmp" ;;
     hysteria2)   sbx_render_hy2     "$f" "$tag" "$port" >"$tmp" ;;
     trojan)      sbx_render_trojan  "$f" "$tag" "$port" >"$tmp" ;;
+    anytls)      sbx_render_anytls  "$f" "$tag" "$port" >"$tmp" ;;
+    tuic)        sbx_render_tuic    "$f" "$tag" "$port" >"$tmp" ;;
+    snell)       sbx_render_snell   "$f" "$tag" "$port" >"$tmp" ;;
+    socks)       sbx_render_socks   "$f" "$tag" "$port" >"$tmp" ;;
+    wireguard)   sbx_render_wireguard "$f" "$tag" "$port" >"$tmp" ;;
     *) warn "未知协议类型：$proto"; rm -f "$tmp"; return 1 ;;
   esac
   if [ ! -s "$tmp" ]; then rm -f "$tmp"; return 1; fi
@@ -1126,9 +1292,26 @@ sbx_link_node() { # $1=名字 → stdout
       ;;
     trojan)
       printf 'trojan://%s@%s:%s?security=tls&sni=%s&insecure=1&type=tcp#%s' \
-        "$(sbx_node_get "$name" password)" "$url_h" "$port" \
-        "$(sbx_node_get "$name" sni)" "$remark"
+        "${SBX_NV["$name.password"]-}" "$url_h" "$port" \
+        "${SBX_NV["$name.sni"]-}" "$remark"
       ;;
+    anytls)
+      printf 'anytls://%s@%s:%s/?sni=%s&insecure=1#%s' \
+        "${SBX_NV["$name.password"]-}" "$url_h" "$port" \
+        "${SBX_NV["$name.sni"]-}" "$remark"
+      ;;
+    tuic)
+      printf 'tuic://%s:%s@%s:%s?congestion_control=%s&alpn=h3&sni=%s&insecure=1#%s' \
+        "${SBX_NV["$name.uuid"]-}" "${SBX_NV["$name.password"]-}" "$url_h" "$port" \
+        "${SBX_NV["$name.congestion"]:-bbr}" "${SBX_NV["$name.sni"]-}" "$remark"
+      ;;
+    socks)
+      printf 'socks5://%s:%s@%s:%s#%s' \
+        "${SBX_NV["$name.username"]-}" "${SBX_NV["$name.password"]-}" \
+        "$url_h" "$port" "$remark"
+      ;;
+    # Snell / WireGuard 没有通用分享链接（各客户端格式不一），只给配置
+    snell|wireguard) return 1 ;;
     *) return 1 ;;
   esac
 }
@@ -1204,6 +1387,7 @@ sbx_yaml_name() {
 sbx_clash_proxy() { # $1=名字
   local name="$1" proto host port remark
   sbx_node_exists "$name" || return 1
+  sbx_node_load "$name" >/dev/null 2>&1 || true
   proto="$(sbx_node_get "$name" proto)"
   port="$(sbx_node_get "$name" port)"
   remark="$(sbx_yaml_name "$(sbx_node_get "$name" remark)")"
@@ -1258,11 +1442,73 @@ EOF
     type: trojan
     server: $host
     port: $port
-    password: "$(sbx_node_get "$name" password)"
-    sni: $(sbx_node_get "$name" sni)
+    password: "${SBX_NV["$name.password"]-}"
+    sni: ${SBX_NV["$name.sni"]-}
     udp: true
     skip-cert-verify: true
     client-fingerprint: chrome
+EOF
+      ;;
+    anytls)
+      cat <<EOF
+  - name: "$remark"
+    type: anytls
+    server: $host
+    port: $port
+    password: "${SBX_NV["$name.password"]-}"
+    sni: ${SBX_NV["$name.sni"]-}
+    udp: true
+    skip-cert-verify: true
+    client-fingerprint: chrome
+EOF
+      ;;
+    tuic)
+      cat <<EOF
+  - name: "$remark"
+    type: tuic
+    server: $host
+    port: $port
+    uuid: ${SBX_NV["$name.uuid"]-}
+    password: "${SBX_NV["$name.password"]-}"
+    sni: ${SBX_NV["$name.sni"]-}
+    alpn: [h3]
+    congestion-controller: ${SBX_NV["$name.congestion"]:-bbr}
+    udp-relay-mode: native
+    skip-cert-verify: true
+EOF
+      ;;
+    snell)
+      cat <<EOF
+  - name: "$remark"
+    type: snell
+    server: $host
+    port: $port
+    psk: "${SBX_NV["$name.psk"]-}"
+    version: ${SBX_NV["$name.version"]:-5}
+EOF
+      ;;
+    socks)
+      cat <<EOF
+  - name: "$remark"
+    type: socks5
+    server: $host
+    port: $port
+    username: "${SBX_NV["$name.username"]-}"
+    password: "${SBX_NV["$name.password"]-}"
+    udp: true
+EOF
+      ;;
+    wireguard)
+      cat <<EOF
+  - name: "$remark"
+    type: wireguard
+    server: $host
+    port: $port
+    ip: ${SBX_NV["$name.wg_net"]-10.66.1}.2
+    private-key: "${SBX_NV["$name.client_private_key"]-}"
+    public-key: "${SBX_NV["$name.public_key"]-}"
+    mtu: ${SBX_NV["$name.mtu"]:-1408}
+    udp: true
 EOF
       ;;
     *) return 1 ;;
@@ -1642,9 +1888,13 @@ sbx_node_detail() {
       ;;
   esac
   printf '\n'
-  link="$(sbx_link_node "$name")" || { warn "生成链接失败"; return 1; }
-  printf '%s  %s分享链接%s\n' "${SBX_IND-}" "$C_BLD" "$C_RST"
-  printf '%s  %s\n\n' "${SBX_IND-}" "$link"
+  if link="$(sbx_link_node "$name" 2>/dev/null)"; then
+    printf '%s  %s分享链接%s\n' "${SBX_IND-}" "$C_BLD" "$C_RST"
+    printf '%s  %s\n\n' "${SBX_IND-}" "$link"
+  else
+    printf '%s  %s该协议没有通用分享链接，请用下面的 Clash 配置或客户端配置%s\n\n' \
+      "${SBX_IND-}" "$C_DIM" "$C_RST"
+  fi
   return 0
 }
 
@@ -1701,14 +1951,24 @@ sbx_cmd_add() {
     printf '%s  %s2)%s %-32s%s（UDP，抗丢包）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "Hysteria2" "$C_DIM" "$C_RST"
     printf '%s  %s3)%s %-32s%s（兼容性最好）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "Shadowsocks 2022" "$C_DIM" "$C_RST"
     printf '%s  %s4)%s %-32s%s（需要伪装域名）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "Trojan + TLS" "$C_DIM" "$C_RST"
+    printf '%s  %s5)%s %-32s%s（TLS，抗探测）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "AnyTLS" "$C_DIM" "$C_RST"
+    printf '%s  %s6)%s %-32s%s（明文代理，带账号）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "SOCKS5" "$C_DIM" "$C_RST"
+    printf '%s  %s7)%s %-32s%s（UDP 隧道）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "WireGuard" "$C_DIM" "$C_RST"
+    printf '%s  %s8)%s %-32s%s（QUIC）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "TUIC v5" "$C_DIM" "$C_RST"
+    printf '%s  %s9)%s %-32s%s（Surge 协议）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "Snell v5" "$C_DIM" "$C_RST"
     printf '\n%s  %s直接回车返回上级菜单%s\n\n' "${SBX_IND-}" "$C_DIM" "$C_RST"
-    sbx_prompt "请选择协议（1-4）" "" || return 1
+    sbx_prompt "请选择协议（1-9）" "" || return 1
     case "$SBX_REPLY" in
       '') sbx_back; return 0 ;;
       1|reality|vless) proto="reality" ;;
       2|hy2|hysteria2) proto="hysteria2" ;;
       3|ss|shadowsocks) proto="shadowsocks" ;;
       4|trojan) proto="trojan" ;;
+      5|anytls) proto="anytls" ;;
+      6|socks|socks5) proto="socks" ;;
+      7|wg|wireguard) proto="wireguard" ;;
+      8|tuic) proto="tuic" ;;
+      9|snell) proto="snell" ;;
       *) err "无效选择：$SBX_REPLY"; return 1 ;;
     esac
   fi
@@ -1716,7 +1976,7 @@ sbx_cmd_add() {
   local base def_name name port def_port sni remark pnet
   # 默认端口一律随机，用户直接回车就用随机值，也可以自己填
   case "$proto" in
-    reality|hysteria2|shadowsocks|trojan) def_port="$(sbx_random_port)" ;;
+    reality|hysteria2|shadowsocks|trojan|anytls|tuic|snell|socks|wireguard) def_port="$(sbx_random_port)" ;;
     *) err "未知协议：$proto"; return 1 ;;
   esac
   pnet="$(sbx_proto_net "$proto")"
@@ -1793,11 +2053,31 @@ sbx_cmd_add() {
       sbx_add_tls_proto "$proto" "$name" "$port" "$sni" "$remark" "$crt" "$key" \
         || { sbx_snapshot_drop; return 1; }
       ;;
+    anytls|tuic)
+      sni="${SBX_SNI_HINT:-}"
+      if [ -z "$sni" ]; then
+        sbx_prompt "证书域名 / SNI" "$SBX_DEFAULT_TLS_SNI" || { sbx_snapshot_drop; return 1; }
+        sni="${SBX_REPLY:-$SBX_DEFAULT_TLS_SNI}"
+      fi
+      sni="$(sbx_sni_host "$sni")"
+      case "$sni" in
+        ''|*[!A-Za-z0-9.-]*) err "域名不合法：$sni"; sbx_snapshot_drop; return 1 ;;
+      esac
+      info "生成自签证书（CN=$sni）…"
+      if [ "$proto" = anytls ]; then
+        sbx_add_anytls "$name" "$port" "$sni" "$remark" || { sbx_snapshot_drop; return 1; }
+      else
+        sbx_add_tuic "$name" "$port" "$sni" "$remark" || { sbx_snapshot_drop; return 1; }
+      fi
+      ;;
+    snell)     sbx_add_snell "$name" "$port" "$remark" || { sbx_snapshot_drop; return 1; } ;;
+    socks)     sbx_add_socks "$name" "$port" "$remark" || { sbx_snapshot_drop; return 1; } ;;
+    wireguard) sbx_add_wireguard "$name" "$port" "$remark" || { sbx_snapshot_drop; return 1; } ;;
   esac
 
   info "校验配置并热重载…"
   local net="tcp"
-  [ "$proto" = hysteria2 ] && net="udp"
+  [ "$pnet" = udp ] && net="udp"
   if ! sbx_apply "添加节点 $name" "$port" "$net"; then
     err "添加失败，已回滚"
     return 1
@@ -2028,8 +2308,12 @@ sbx_self_test() {
   pk="$(printf '%s\n' "$kp" | awk -F': *' 'tolower($1) ~ /private/ {print $2; exit}')"
   pub="$(printf '%s\n' "$kp" | awk -F': *' 'tolower($1) ~ /public/ {print $2; exit}')"
   ss_pw="$(sbx_gen_ss_key 16)" || ss_pw="AAAAAAAAAAAAAAAAAAAAAA=="
+  local wg_pair wg_sp="" wg_cp=""
+  wg_pair="$("$SBX_BIN" generate wg-keypair 2>/dev/null)"
+  wg_sp="$(printf '%s\n' "$wg_pair" | awk -F': *' 'tolower($1) ~ /private/ {print $2; exit}')"
+  wg_cp="$(printf '%s\n' "$wg_pair" | awk -F': *' 'tolower($1) ~ /public/ {print $2; exit}')"
 
-  info "渲染四种协议配置…"
+  info "渲染九种协议配置…"
   jq -n --arg pk "$pk" --arg pub "$pub" \
     '{name:"selftest",proto:"reality",port:20001,sni:"addons.mozilla.org",
       flow:"xtls-rprx-vision",uuid:"11111111-2222-3333-4444-555555555555",
@@ -2044,16 +2328,35 @@ sbx_self_test() {
   jq -n --arg c "$crt" --arg k "$key" \
     '{name:"selftest",proto:"trojan",port:20004,sni:"addons.mozilla.org",password:"selftest-pw",cert_path:$c,key_path:$k}' \
     >"$tmp/nodes/trojan.json"
+  jq -n --arg c "$crt" --arg k "$key" \
+    '{name:"selftest",proto:"anytls",port:20005,sni:"addons.mozilla.org",password:"selftest-pw",cert_path:$c,key_path:$k}' \
+    >"$tmp/nodes/anytls.json"
+  jq -n '
+    {name:"selftest",proto:"socks",port:20006,username:"selftest",password:"selftest-pw"}' \
+    >"$tmp/nodes/socks.json"
+  jq -n --arg sp "$wg_sp" --arg cp "$wg_cp" '
+    {name:"selftest",proto:"wireguard",port:20007,private_key:$sp,client_public_key:$cp,wg_net:"10.99.9",mtu:1408}' \
+    >"$tmp/nodes/wg.json"
+  jq -n --arg c "$crt" --arg k "$key" --arg u "22222222-3333-4444-5555-666666666666" '
+    {name:"selftest",proto:"tuic",port:20008,sni:"addons.mozilla.org",uuid:$u,password:"selftest-pw",cert_path:$c,key_path:$k,congestion:"bbr"}' \
+    >"$tmp/nodes/tuic.json"
+  jq -n '{name:"selftest",proto:"snell",port:20009,psk:"selftest-psk",version:5}' \
+    >"$tmp/nodes/snell.json"
 
   sbx_render_reality "$tmp/nodes/reality.json" "st-reality" 20001 >"$tmp/conf.d/in-reality.json" || rc=1
   sbx_render_ss      "$tmp/nodes/ss.json"      "st-ss"      20002 >"$tmp/conf.d/in-ss.json"      || rc=1
   sbx_render_hy2     "$tmp/nodes/hy2.json"     "st-hy2"     20003 >"$tmp/conf.d/in-hy2.json"     || rc=1
   sbx_render_trojan  "$tmp/nodes/trojan.json"  "st-trojan"  20004 >"$tmp/conf.d/in-trojan.json"  || rc=1
+  sbx_render_anytls  "$tmp/nodes/anytls.json"  "st-anytls"  20005 >"$tmp/conf.d/in-anytls.json"  || rc=1
+  sbx_render_socks   "$tmp/nodes/socks.json"   "st-socks"   20006 >"$tmp/conf.d/in-socks.json"   || rc=1
+  sbx_render_wireguard "$tmp/nodes/wg.json"    "st-wg"      20007 >"$tmp/conf.d/in-wg.json"      || rc=1
+  sbx_render_tuic    "$tmp/nodes/tuic.json"    "st-tuic"    20008 >"$tmp/conf.d/in-tuic.json"    || rc=1
+  sbx_render_snell   "$tmp/nodes/snell.json"   "st-snell"   20009 >"$tmp/conf.d/in-snell.json"   || rc=1
 
   if [ "$rc" -eq 0 ]; then
     local out
     if out="$("$SBX_BIN" check -c "$tmp/base.json" -C "$tmp/conf.d" 2>&1)"; then
-      ok "自检通过：四种协议配置全部合法"
+      ok "自检通过：九种协议配置全部合法"
     else
       err "自检失败："
       printf '%s\n' "$out" | sed 's/^/    /'
