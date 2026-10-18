@@ -1,0 +1,7 @@
+*.log
+*.bak
+.DS_Store
+Thumbs.db
+
+# 本地测试产物
+/tmp/
