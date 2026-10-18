@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.23"
+SCRIPT_VERSION="0.1.24"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -313,7 +313,7 @@ sbx_proto_short() {
   case "$1" in
     reality)     printf 'Reality' ;;
     hysteria2)   printf 'HY2' ;;
-    shadowsocks) printf 'SS' ;;
+    shadowsocks) printf 'SS2022' ;;
     trojan)      printf 'Trojan' ;;
     *)           printf '%s' "$1" ;;
   esac
@@ -1597,7 +1597,7 @@ sbx_cmd_add() {
     *) err "未知协议：$proto"; return 1 ;;
   esac
   pnet="$(sbx_proto_net "$proto")"
-  # 默认名字：ACXC-SB-Reality / ACXC-SB-HY2 / ACXC-SB-SS / ACXC-SB-Trojan，重名自动加 -2 -3
+  # 默认名字：ACXC-SB-Reality / ACXC-SB-HY2 / ACXC-SB-SS2022 / ACXC-SB-Trojan，重名自动加 -2 -3
   base="${SBX_NAME_PREFIX:-ACXC-SB-$(sbx_proto_short "$proto")}"
   def_name="$(sbx_next_name "$base")"
   if [ -n "${SBX_ARG_NAME:-}" ]; then
