@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.11"
+SCRIPT_VERSION="0.1.12"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -723,11 +723,13 @@ sbx_render_reality() { # $1=state 文件 $2=tag $3=端口
 
 sbx_render_ss() {
   local f="$1" tag="$2" port="$3"
+  # 注意：不要写 network:"tcp,udp"。sing-box 不认这种逗号写法（会报 unknown network），
+  # 省略 network 字段时默认就是 tcp+udp，跟我们要的行为一致。
   jq -n --arg tag "$tag" --argjson port "$port" \
     --arg m "$(jq -r '.method' "$f")" \
     --arg pw "$(jq -r '.password' "$f")" \
     '{inbounds:[{type:"shadowsocks", tag:$tag, listen:"::", listen_port:$port,
-                 method:$m, password:$pw, network:"tcp,udp"}]}'
+                 method:$m, password:$pw}]}'
 }
 
 sbx_render_hy2() {
@@ -1767,6 +1769,73 @@ sbx_cmd_log() {
   return 0
 }
 
+# ============================== 自检 ========================================
+# 用临时目录把四种协议各渲染一份，交给 sing-box check。
+# 不碰现有节点、不碰 systemd，纯离线验证「渲染出来的配置能不能被 sing-box 接受」
+sbx_self_test() {
+  local tmp rc=0 crt key kp pk pub ss_pw
+  if ! sbx_sb_installed; then
+    err "sing-box 还没装，无法自检"
+    return 1
+  fi
+  tmp="$(mktemp -d)" || return 1
+  mkdir -p "$tmp/conf.d" "$tmp/nodes" "$tmp/certs" || { rm -rf "$tmp"; return 1; }
+  printf '{"log":{"level":"warn"},"outbounds":[{"type":"direct","tag":"direct"}]}' >"$tmp/base.json"
+
+  info "生成自签证书与密钥…"
+  # 注意：这个子命令是把密钥和证书打印到 stdout，不会自己写文件，得手动分离
+  "$SBX_BIN" generate tls-keypair -m 12 addons.mozilla.org >"$tmp/certs/pair.pem" 2>/dev/null
+  awk '/BEGIN PRIVATE KEY/,/END PRIVATE KEY/'     "$tmp/certs/pair.pem" >"$tmp/certs/private-key.pem"
+  awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/'     "$tmp/certs/pair.pem" >"$tmp/certs/certificate.pem"
+  crt="$tmp/certs/certificate.pem"; key="$tmp/certs/private-key.pem"
+  if [ ! -s "$crt" ] || [ ! -s "$key" ]; then
+    err "自签证书生成失败（sing-box generate tls-keypair 没输出）"
+    rm -rf "$tmp"
+    return 1
+  fi
+  kp="$("$SBX_BIN" generate reality-keypair 2>/dev/null)"
+  pk="$(printf '%s\n' "$kp" | awk -F': *' 'tolower($1) ~ /private/ {print $2; exit}')"
+  pub="$(printf '%s\n' "$kp" | awk -F': *' 'tolower($1) ~ /public/ {print $2; exit}')"
+  ss_pw="$(sbx_gen_ss_key 16)" || ss_pw="AAAAAAAAAAAAAAAAAAAAAA=="
+
+  info "渲染四种协议配置…"
+  jq -n --arg pk "$pk" --arg pub "$pub" \
+    '{name:"selftest",proto:"reality",port:20001,sni:"addons.mozilla.org",
+      flow:"xtls-rprx-vision",uuid:"11111111-2222-3333-4444-555555555555",
+      private_key:$pk,public_key:$pub,short_id:"0123456789abcdef"}' \
+    >"$tmp/nodes/reality.json"
+  jq -n --arg pw "$ss_pw" \
+    '{name:"selftest",proto:"shadowsocks",port:20002,method:"2022-blake3-aes-128-gcm",password:$pw}' \
+    >"$tmp/nodes/ss.json"
+  jq -n --arg c "$crt" --arg k "$key" \
+    '{name:"selftest",proto:"hysteria2",port:20003,sni:"addons.mozilla.org",password:"selftest-pw",cert_path:$c,key_path:$k}' \
+    >"$tmp/nodes/hy2.json"
+  jq -n --arg c "$crt" --arg k "$key" \
+    '{name:"selftest",proto:"trojan",port:20004,sni:"addons.mozilla.org",password:"selftest-pw",cert_path:$c,key_path:$k}' \
+    >"$tmp/nodes/trojan.json"
+
+  sbx_render_reality "$tmp/nodes/reality.json" "st-reality" 20001 >"$tmp/conf.d/in-reality.json" || rc=1
+  sbx_render_ss      "$tmp/nodes/ss.json"      "st-ss"      20002 >"$tmp/conf.d/in-ss.json"      || rc=1
+  sbx_render_hy2     "$tmp/nodes/hy2.json"     "st-hy2"     20003 >"$tmp/conf.d/in-hy2.json"     || rc=1
+  sbx_render_trojan  "$tmp/nodes/trojan.json"  "st-trojan"  20004 >"$tmp/conf.d/in-trojan.json"  || rc=1
+
+  if [ "$rc" -eq 0 ]; then
+    local out
+    if out="$("$SBX_BIN" check -c "$tmp/base.json" -C "$tmp/conf.d" 2>&1)"; then
+      ok "自检通过：四种协议配置全部合法"
+    else
+      err "自检失败："
+      printf '%s\n' "$out" | sed 's/^/    /'
+      rc=1
+    fi
+  else
+    err "渲染阶段就失败了"
+    rc=1
+  fi
+  rm -rf "$tmp"
+  return "$rc"
+}
+
 # ============================== 脚本自更新 ==================================
 # 找一个含有本脚本的 git 仓库（默认 /opt/ACXC-Sing-Box）
 sbx_repo_dir() {
@@ -2077,6 +2146,7 @@ ${SCRIPT_NAME} v${SCRIPT_VERSION}
   bash $0 --hop <名字> <端口段|off>
   bash $0 --start | --stop | --restart | --status | --log [行数]
   bash $0 --update-singbox [--sb-version x.y.z]
+  bash $0 --self-test               用临时目录验证四种协议配置是否合法
   bash $0 --update-script [本地文件|URL]
   bash $0 --uninstall [--purge]
   bash $0 --host <IP>              链接里使用的地址（默认自动探测）
@@ -2128,6 +2198,7 @@ sbx_parse_args() {
       --start|--stop|--restart|--status) SBX_ACTION="${a#--}" ;;
       --log) shift; SBX_ACTION="log"; SBX_ACTION_ARG="${1:-40}" ;;
       --update-singbox) SBX_ACTION="update-singbox" ;;
+      --self-test) SBX_ACTION="self-test" ;;
       --update-script) SBX_ACTION="update-script"
                        if [ -n "${2:-}" ] && [ "${2#-}" = "$2" ]; then SBX_ACTION_ARG="$2"; shift; fi ;;
       --uninstall) SBX_ACTION="uninstall" ;;
@@ -2214,6 +2285,7 @@ sbx_main() {
     start|stop|restart|status) sbx_cmd_service "$SBX_ACTION" ;;
     log)         sbx_cmd_log "${SBX_ACTION_ARG:-40}" ;;
     update-singbox) sbx_cmd_update_singbox ;;
+    self-test)   sbx_self_test ;;
     update-script)  sbx_cmd_update_script "$SBX_ACTION_ARG" ;;
     uninstall)   sbx_cmd_uninstall "$SBX_ACTION_ARG" ;;
     *) sbx_usage; return 2 ;;
