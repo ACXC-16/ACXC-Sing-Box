@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.4"
+SCRIPT_VERSION="0.1.5"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -1441,17 +1441,8 @@ sbx_show_node() {
   esac
   printf '\n'
   link="$(sbx_link_node "$name")" || { warn "生成链接失败"; return 1; }
-  printf '  %s① 分享链接%s\n' "$C_BLD" "$C_RST"
+  printf '  %s分享链接%s\n' "$C_BLD" "$C_RST"
   printf '  %s\n\n' "$link"
-  printf '  %s② 二维码%s\n' "$C_BLD" "$C_RST"
-  if [ "$SBX_TTY_OK" -eq 1 ]; then
-    sbx_qr "$link"
-  else
-    info "非交互环境，跳过二维码"
-  fi
-  printf '  %s③ Clash 配置%s\n' "$C_BLD" "$C_RST"
-  sbx_clash_proxy "$name" 2>/dev/null | sed 's/^/  /'
-  printf '\n'
   return 0
 }
 
