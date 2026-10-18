@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.1.24"
+SCRIPT_VERSION="0.1.25"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -69,6 +69,7 @@ SBX_SNAP=""
 SBX_FAILED=0
 SBX_REPLY=""
 SBX_IND=""          # 横向居中用的左缩进（空格串）；非终端时为空
+declare -a SBX_PICKED=()   # sbx_pick_nodes 的解析结果
 
 declare -a SBX_ARGS=()
 
@@ -1496,7 +1497,7 @@ sbx_cmd_update_singbox() {
 
 # ============================== 节点：命令 ==================================
 sbx_cmd_list() { # $1=页脚提示（可空）
-  local footer="${1:-输入编号查看详情，直接回车返回上级菜单}"
+  local footer="${1:-输入编号查看详情（可多个，空格分隔），直接回车返回上级菜单}"
   local name i=0 n=0 c1 c2 c3 c4 c5
   sbx_screen_header "节点列表"
   sbx_padv c1 "编号" 4; sbx_padv c2 "名字" 22; sbx_padv c3 "协议" 32
@@ -1534,9 +1535,9 @@ sbx_resolve_node() {
   return 1
 }
 
-sbx_show_node() {
+# 单个节点的字段与分享链接（不含 logo 头部，供单看/多看好复用）
+sbx_node_detail() {
   local name="$1" link
-  sbx_screen_header "节点：$name"
   sbx_kv "协议" "$(sbx_proto_label "$(sbx_node_get "$name" proto)")"
   sbx_kv "端口" "$(sbx_node_get "$name" port)"
   sbx_kv "备注" "$(sbx_node_get "$name" remark)"
@@ -1563,6 +1564,46 @@ sbx_show_node() {
   printf '%s  %s分享链接%s\n' "${SBX_IND-}" "$C_BLD" "$C_RST"
   printf '%s  %s\n\n' "${SBX_IND-}" "$link"
   return 0
+}
+
+# 单个节点详情（带 logo 头部）
+sbx_show_node() {
+  sbx_screen_header "节点：$1"
+  sbx_node_detail "$1"
+}
+
+# 一次看多个节点：一个头部，逐个列字段
+sbx_show_nodes() {
+  local -a list=("$@")
+  local n="${#list[@]}" name k=0
+  [ "$n" -gt 0 ] || return 1
+  if [ "$n" -eq 1 ]; then
+    sbx_show_node "${list[0]}"
+    return $?
+  fi
+  sbx_screen_header "节点详情（${n} 个）"
+  for name in "${list[@]}"; do
+    k=$((k + 1))
+    [ "$k" -gt 1 ] && printf '\n'
+    printf '%s  %s%s%s\n' "${SBX_IND-}" "$C_BLD" "$name" "$C_RST"
+    sbx_node_detail "$name"
+  done
+  return 0
+}
+
+# 把 "1 2,3" 这样的输入解析成节点名列表 → SBX_PICKED
+sbx_pick_nodes() { # $1=原始输入 → 0=至少选中一个
+  local tok
+  SBX_PICKED=()
+  for tok in $(printf '%s' "$1" | sed 's/[,，;；]/ /g'); do
+    [ -n "$tok" ] || continue
+    if sbx_resolve_node "$tok"; then
+      SBX_PICKED+=("$SBX_REPLY")
+    else
+      warn "找不到节点：$tok"
+    fi
+  done
+  [ "${#SBX_PICKED[@]}" -gt 0 ]
 }
 
 sbx_cmd_add() {
@@ -2222,14 +2263,12 @@ sbx_menu_main() {
       1)
          sbx_cmd_list
          sbx_prompt "选择" "" || continue
-         case "$SBX_REPLY" in
-           '')  continue ;;   # 直接回车＝返回上级菜单
-           *)   if sbx_resolve_node "$SBX_REPLY"; then
-                  sbx_clear; SBX_IN_MENU=1; SBX_SCREEN_STARTED=0
-                  sbx_show_node "$SBX_REPLY"
-                else warn "找不到节点：$SBX_REPLY"; fi ;;
-         esac
-         sbx_pause ;;
+         [ -n "$SBX_REPLY" ] || continue      # 直接回车＝返回上级菜单
+         if sbx_pick_nodes "$SBX_REPLY"; then
+           sbx_clear; SBX_IN_MENU=1; SBX_SCREEN_STARTED=0
+           sbx_show_nodes "${SBX_PICKED[@]}"
+         fi
+         sbx_after_action ;;
       2) sbx_cmd_add; sbx_after_action ;;
       3) sbx_cmd_del; sbx_after_action ;;
       4) sbx_screen_header "修改协议端口"
