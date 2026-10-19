@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.2.3"
+SCRIPT_VERSION="0.2.4"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -2623,14 +2623,20 @@ sbx_menu_list() {
   return 0
 }
 
-sbx_banner() {
-  sbx_calc_indent
-  sbx_vmargin
+# 品牌区：logo + 站名 + 副标题（主菜单和所有二级页面共用同一套）
+sbx_brand_block() {
   sbx_build_banner
   printf '%s' "${C_BLD}${C_CYN}${SBX_BANNER}${C_RST}" | sbx_indent_text
   printf '\n%s  %s%sACXC-SINGBOX%s\n' "${SBX_IND-}" "$C_BLD" "$C_CYN" "$C_RST"
   printf '%s  %s基于%s%sSing-Box%s%s协议开发的一键搭建协议脚本%s\n' \
     "${SBX_IND-}" "$C_DIM" "$C_RST" "$C_CYN" "$C_RST" "$C_DIM" "$C_RST"
+  return 0
+}
+
+sbx_banner() {
+  sbx_calc_indent
+  sbx_vmargin
+  sbx_brand_block
   sbx_status_line
   printf '%s  %s──────────────────────────────────────────────%s\n\n' \
     "${SBX_IND-}" "$C_DIM" "$C_RST"
@@ -2646,8 +2652,7 @@ sbx_screen_header() { # $1=标题
   SBX_SCREEN_STARTED=1
   sbx_calc_indent
   sbx_vmargin
-  sbx_build_banner
-  printf '%s' "${C_BLD}${C_CYN}${SBX_BANNER}${C_RST}" | sbx_indent_text
+  sbx_brand_block
   printf '\n%s  %s%s%s\n' "${SBX_IND-}" "$C_BLD" "${1:-}" "$C_RST"
   printf '%s  %s──────────────────────────────────────────────%s\n\n' \
     "${SBX_IND-}" "$C_DIM" "$C_RST"
