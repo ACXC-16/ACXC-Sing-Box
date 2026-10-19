@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.2.1"
+SCRIPT_VERSION="0.2.2"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -1961,15 +1961,29 @@ sbx_cmd_add() {
   [ -n "${SBX_PROTO_HINT:-}" ] && proto="$SBX_PROTO_HINT"
   if [ -z "${proto:-}" ]; then
     sbx_screen_header "添加协议"
-    printf '%s  %s1)%s %-32s%s（无需域名，推荐）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "VLESS+TCP+XTLS Vision+Reality" "$C_DIM" "$C_RST"
-    printf '%s  %s2)%s %-32s%s（UDP，抗丢包）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "Hysteria2" "$C_DIM" "$C_RST"
-    printf '%s  %s3)%s %-32s%s（兼容性最好）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "Shadowsocks 2022" "$C_DIM" "$C_RST"
-    printf '%s  %s4)%s %-32s%s（需要伪装域名）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "Trojan + TLS" "$C_DIM" "$C_RST"
-    printf '%s  %s5)%s %-32s%s（TLS，抗探测）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "AnyTLS" "$C_DIM" "$C_RST"
-    printf '%s  %s6)%s %-32s%s（明文代理，带账号）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "SOCKS5" "$C_DIM" "$C_RST"
-    printf '%s  %s7)%s %-32s%s（UDP 隧道）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "WireGuard" "$C_DIM" "$C_RST"
-    printf '%s  %s8)%s %-32s%s（QUIC）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "TUIC v5" "$C_DIM" "$C_RST"
-    printf '%s  %s9)%s %-32s%s（Surge 协议）%s\n' "${SBX_IND-}" "$C_GRN" "$C_RST" "Snell v5" "$C_DIM" "$C_RST"
+    # 只有 VLESS 和 SS2022 标"推荐"，其余不加任何说明
+    local _plist=(
+      "VLESS+TCP+XTLS Vision+Reality|1"
+      "Hysteria2|0"
+      "Shadowsocks 2022|1"
+      "Trojan + TLS|0"
+      "AnyTLS|0"
+      "SOCKS5|0"
+      "WireGuard|0"
+      "TUIC v5|0"
+      "Snell v5|0"
+    )
+    local _i=0 _item _pname _prec
+    for _item in "${_plist[@]}"; do
+      _i=$((_i + 1))
+      _pname="${_item%|*}"; _prec="${_item##*|}"
+      if [ "$_prec" = "1" ]; then
+        printf '%s  %s%2d)%s %-32s%s推荐%s\n' \
+          "${SBX_IND-}" "$C_GRN" "$_i" "$C_RST" "$_pname" "$C_YEL" "$C_RST"
+      else
+        printf '%s  %s%2d)%s %s\n' "${SBX_IND-}" "$C_GRN" "$_i" "$C_RST" "$_pname"
+      fi
+    done
     printf '\n%s  %s直接回车返回上级菜单%s\n\n' "${SBX_IND-}" "$C_DIM" "$C_RST"
     sbx_prompt "请选择协议（1-9）" "" || return 1
     case "$SBX_REPLY" in
