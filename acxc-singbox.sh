@@ -23,7 +23,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.2.2"
+SCRIPT_VERSION="0.2.3"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -701,7 +701,7 @@ sbx_proto_label() {
     trojan)      printf 'Trojan-TLS' ;;
     anytls)      printf 'AnyTLS' ;;
     tuic)        printf 'TUIC v5' ;;
-    snell)       printf 'Snell v5' ;;
+    snell)       printf 'Snell（v4/v5/v6）' ;;
     socks)       printf 'SOCKS5' ;;
     wireguard)   printf 'WireGuard' ;;
     *)           printf '%s' "$1" ;;
@@ -934,14 +934,16 @@ sbx_add_tuic() {
 }
 
 # ---- Snell v5（Surge 协议，PSK）--------------------------------------------
-sbx_add_snell() {
-  local name="$1" port="$2" remark="$3" psk tmp
+sbx_add_snell() { # $1=名字 $2=端口 $3=备注 $4=版本（5=v4/v5 兼容，6=v6）
+  local name="$1" port="$2" remark="$3" ver="${4:-5}" psk tmp
+  case "$ver" in 6) ver=6 ;; *) ver=5 ;; esac
+  # v6 要求 psk 12~255 字节，24 位随机串满足
   psk="$(sbx_gen_password 24)" || { err "生成 PSK 失败"; return 1; }
   tmp="$(mktemp)" || return 1
   jq -n --arg n "$name" --argjson p "$port" --arg r "$remark" --arg psk "$psk" \
-        --arg ts "$(date '+%Y-%m-%d %H:%M:%S')" \
+        --argjson ver "$ver" --arg ts "$(date '+%Y-%m-%d %H:%M:%S')" \
     '{schema:1,name:$n,proto:"snell",remark:$r,port:$p,host:"",hop:"",
-      psk:$psk,version:5,obfs:"none",created:$ts,updated:$ts}' \
+      psk:$psk,version:$ver,created:$ts,updated:$ts}' \
     >"$tmp" || { rm -f "$tmp"; return 1; }
   sbx_node_write "$tmp" "$(sbx_node_file "$name")" || { rm -f "$tmp"; return 1; }
   rm -f "$tmp"
@@ -1900,6 +1902,30 @@ sbx_node_detail() {
       local hop; hop="$(sbx_node_get "$name" hop)"
       [ -n "$hop" ] && sbx_kv "端口跳跃" "$hop"
       ;;
+    snell)
+      local sver; sver="$(sbx_node_get "$name" version)"
+      if [ "$sver" = "6" ]; then sbx_kv "版本" "v6"; else sbx_kv "版本" "v4 / v5（兼容）"; fi
+      sbx_kv "PSK" "$(sbx_node_get "$name" psk)"
+      ;;
+    tuic)
+      sbx_kv "SNI" "$(sbx_node_get "$name" sni)"
+      sbx_kv "UUID" "$(sbx_node_get "$name" uuid)"
+      sbx_kv "密码" "$(sbx_node_get "$name" password)"
+      ;;
+    anytls)
+      sbx_kv "SNI" "$(sbx_node_get "$name" sni)"
+      sbx_kv "密码" "$(sbx_node_get "$name" password)"
+      ;;
+    socks)
+      sbx_kv "用户名" "$(sbx_node_get "$name" username)"
+      sbx_kv "密码" "$(sbx_node_get "$name" password)"
+      ;;
+    wireguard)
+      sbx_kv "服务端私钥" "$(sbx_node_get "$name" private_key)"
+      sbx_kv "服务端公钥" "$(sbx_node_get "$name" public_key)"
+      sbx_kv "客户端私钥" "$(sbx_node_get "$name" client_private_key)"
+      sbx_kv "隧道网段" "$(sbx_node_get "$name" wg_net).0/24"
+      ;;
   esac
   printf '\n'
   if link="$(sbx_link_node "$name" 2>/dev/null)"; then
@@ -1971,7 +1997,7 @@ sbx_cmd_add() {
       "SOCKS5|0"
       "WireGuard|0"
       "TUIC v5|0"
-      "Snell v5|0"
+      "Snell（v4/v5/v6）|0"
     )
     local _i=0 _item _pname _prec
     for _item in "${_plist[@]}"; do
@@ -2098,7 +2124,14 @@ sbx_cmd_add() {
         sbx_add_tuic "$name" "$port" "$sni" "$remark" || { sbx_snapshot_drop; return 1; }
       fi
       ;;
-    snell)     sbx_add_snell "$name" "$port" "$remark" || { sbx_snapshot_drop; return 1; } ;;
+    snell)
+      local sver=5
+      if [ "$SBX_ASSUME_YES" -eq 0 ]; then
+        sbx_prompt "Snell 版本（5=v4/v5 兼容，6=v6）" "5" || { sbx_snapshot_drop; return 1; }
+        case "$SBX_REPLY" in 6|v6|V6) sver=6 ;; *) sver=5 ;; esac
+      fi
+      sbx_add_snell "$name" "$port" "$remark" "$sver" || { sbx_snapshot_drop; return 1; }
+      ;;
     socks)     sbx_add_socks "$name" "$port" "$remark" || { sbx_snapshot_drop; return 1; } ;;
     wireguard) sbx_add_wireguard "$name" "$port" "$remark" || { sbx_snapshot_drop; return 1; } ;;
   esac
@@ -2346,7 +2379,7 @@ sbx_self_test() {
   wg_sp="$(printf '%s\n' "$wg_pair" | awk -F': *' 'tolower($1) ~ /private/ {print $2; exit}')"
   wg_cp="$(printf '%s\n' "$wg_pair" | awk -F': *' 'tolower($1) ~ /public/ {print $2; exit}')"
 
-  info "渲染九种协议配置…"
+  info "渲染九种协议（十份配置，Snell 含 v5/v6）…"
   jq -n --arg pk "$pk" --arg pub "$pub" \
     '{name:"selftest",proto:"reality",port:20001,sni:"addons.mozilla.org",
       flow:"xtls-rprx-vision",uuid:"11111111-2222-3333-4444-555555555555",
@@ -2373,8 +2406,10 @@ sbx_self_test() {
   jq -n --arg c "$crt" --arg k "$key" --arg u "22222222-3333-4444-5555-666666666666" '
     {name:"selftest",proto:"tuic",port:20008,sni:"addons.mozilla.org",uuid:$u,password:"selftest-pw",cert_path:$c,key_path:$k,congestion:"bbr"}' \
     >"$tmp/nodes/tuic.json"
-  jq -n '{name:"selftest",proto:"snell",port:20009,psk:"selftest-psk",version:5}' \
+  jq -n '{name:"selftest",proto:"snell",port:20009,psk:"selftest-psk123456",version:5}' \
     >"$tmp/nodes/snell.json"
+  jq -n '{name:"selftest",proto:"snell",port:20010,psk:"selftest-psk123456",version:6}' \
+    >"$tmp/nodes/snell6.json"
 
   sbx_render_reality "$tmp/nodes/reality.json" "st-reality" 20001 >"$tmp/conf.d/in-reality.json" || rc=1
   sbx_render_ss      "$tmp/nodes/ss.json"      "st-ss"      20002 >"$tmp/conf.d/in-ss.json"      || rc=1
@@ -2385,11 +2420,12 @@ sbx_self_test() {
   sbx_render_wireguard "$tmp/nodes/wg.json"    "st-wg"      20007 >"$tmp/conf.d/in-wg.json"      || rc=1
   sbx_render_tuic    "$tmp/nodes/tuic.json"    "st-tuic"    20008 >"$tmp/conf.d/in-tuic.json"    || rc=1
   sbx_render_snell   "$tmp/nodes/snell.json"   "st-snell"   20009 >"$tmp/conf.d/in-snell.json"   || rc=1
+  sbx_render_snell   "$tmp/nodes/snell6.json"  "st-snell6"  20010 >"$tmp/conf.d/in-snell6.json"  || rc=1
 
   if [ "$rc" -eq 0 ]; then
     local out
     if out="$("$SBX_BIN" check -c "$tmp/base.json" -C "$tmp/conf.d" 2>&1)"; then
-      ok "自检通过：九种协议配置全部合法"
+      ok "自检通过：九种协议、十份配置全部合法"
     else
       err "自检失败："
       printf '%s\n' "$out" | sed 's/^/    /'
