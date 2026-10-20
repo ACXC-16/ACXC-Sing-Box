@@ -599,6 +599,38 @@ sbx_node_exists() { [ -f "$(sbx_node_file "$1")" ]; }
 declare -A SBX_NV=()
 SBX_NODE_CACHE_ENABLED=0
 # 按文件路径读一个字段（渲染器用这个，因为它拿到的是任意 state 文件路径）
+# JSON 字符串反转义（\\ \" \n \r \t \b \f）。结果写入 SBX_UNESC，不启子 shell。
+# 我们自己写的 state 只有极少数值会带反斜杠，所以先走快路径。
+SBX_UNESC=""
+sbx_json_unescape() { # $1=原始字符串 → SBX_UNESC
+  local s="${1-}" out="" ch n i=0
+  SBX_UNESC="$s"
+  case "$s" in
+    *\\*) ;;
+    *) return 0 ;;
+  esac
+  n=${#s}
+  while [ "$i" -lt "$n" ]; do
+    ch="${s:i:1}"
+    if [ "$ch" = "\\" ] && [ $((i + 1)) -lt "$n" ]; then
+      i=$((i + 1)); ch="${s:i:1}"
+      case "$ch" in
+        n) out+=$'\n' ;;
+        r) out+=$'\r' ;;
+        t) out+=$'\t' ;;
+        b) out+=$'\b' ;;
+        f) out+=$'\f' ;;
+        *) out+="$ch" ;;
+      esac
+    else
+      out+="$ch"
+    fi
+    i=$((i + 1))
+  done
+  SBX_UNESC="$out"
+  return 0
+}
+
 sbx_file_get() { # $1=文件 $2=键
   local f="$1" key="$2" line v
   [ -r "$f" ] || return 1
@@ -609,7 +641,8 @@ sbx_file_get() { # $1=文件 $2=键
         v="${v%$'\r'}"
         v="${v%,}"
         v="${v#\"}"; v="${v%\"}"
-        printf '%s' "$v"
+        sbx_json_unescape "$v"
+        printf '%s' "$SBX_UNESC"
         return 0 ;;
     esac
   done <"$f"
@@ -641,7 +674,8 @@ sbx_node_load() { # $1=名字
         k="${line#  \"}"; k="${k%%\":*}"
         [ -n "$k" ] || continue
         v="${line#*: }"; v="${v%$'\r'}"; v="${v%,}"; v="${v#\"}"; v="${v%\"}"
-        SBX_NV["$1.$k"]="$v" ;;
+        sbx_json_unescape "$v"
+        SBX_NV["$1.$k"]="$SBX_UNESC" ;;
     esac
   done <"$f"
   SBX_NODE_CACHE_ENABLED=1
@@ -1404,9 +1438,12 @@ sbx_qr() { # $1=内容
 # YAML 里双引号字符串要转义：只保留安全字符，最省事
 sbx_yaml_name() {
   local s="${1-}"
-  s="${s//\"/}"
-  s="${s//\\/}"
+  # 外层是双引号，这里把 \ 和 " 转义（顺序不能反），换行压成空格
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
   s="${s//$'\n'/ }"
+  s="${s//$'\r'/}"
+  s="${s//$'\t'/ }"
   printf '%s' "$s"
 }
 
@@ -1627,10 +1664,23 @@ EOF
 
 # $1=名字 $2=端口段（如 20000-30000） 或 off
 sbx_hop_apply() {
-  local name="$1" range="$2"
+  local name="$1" range="$2" a b
   sbx_node_exists "$name" || { err "节点不存在：$name"; return 1; }
   [ "$(sbx_node_get "$name" proto)" = hysteria2 ] || {
     err "端口跳跃只对 Hysteria2 节点有效"; return 1; }
+
+  # 先校验参数，再检查依赖：否则没装 nftables 时，格式错误会被"缺少依赖"盖住
+  if [ "$range" != "off" ]; then
+    case "$range" in
+      [0-9]*-[0-9]*) ;;
+      *) err "端口段格式应为 20000-30000（关闭用 off）"; return 1 ;;
+    esac
+    a="${range%%-*}"; b="${range##*-}"
+    sbx_valid_port "$a" && sbx_valid_port "$b" && [ "$a" -lt "$b" ] || {
+      err "端口段不合法：$range"; return 1; }
+    [ $((b - a)) -le 20000 ] || { err "端口段太大（建议不超过 10000 个）"; return 1; }
+  fi
+
   if ! sbx_have nft; then
     warn "端口跳跃需要 nftables"
     if [ "$SBX_ASSUME_YES" -eq 1 ] || sbx_ask_yn "现在安装 nftables？" y; then
@@ -1641,18 +1691,9 @@ sbx_hop_apply() {
     fi
   fi
 
-  if [ "$range" = off ]; then
+  if [ "$range" = "off" ]; then
     sbx_node_set "$name" hop "" || return 1
   else
-    case "$range" in
-      [0-9]*-[0-9]*) ;;
-      *) err "端口段格式应为 20000-30000"; return 1 ;;
-    esac
-    local a b
-    a="${range%%-*}"; b="${range##*-}"
-    sbx_valid_port "$a" && sbx_valid_port "$b" && [ "$a" -lt "$b" ] || {
-      err "端口段不合法：$range"; return 1; }
-    [ $((b - a)) -le 20000 ] || { err "端口段太大（建议不超过 10000 个）"; return 1; }
     sbx_port_in_use "$a" udp && warn "端口段起点 ${a} 已被 UDP 占用（跳跃用不到它，继续）"
     sbx_node_set "$name" hop "$range" || return 1
   fi
@@ -2486,7 +2527,16 @@ sbx_update_from_git() {
     return 1
   fi
   local src
-  src="$(sbx_repo_script "$repo")" || { err "仓库里找不到脚本文件（sb.sh）"; return 1; }
+  if ! src="$(sbx_repo_script "$repo")"; then
+    # 老版本装机会来敲这个门：仓库改名后它找不到 acxc-singbox.sh，退回网络更新
+    if [ -n "$SCRIPT_UPDATE_URL" ]; then
+      warn "仓库里没有找到脚本文件，改用网络更新源"
+      sbx_cmd_update_script "$SCRIPT_UPDATE_URL"
+      return $?
+    fi
+    err "仓库里找不到脚本文件（sb.sh）"
+    return 1
+  fi
   sbx_cmd_update_script "$src"
 }
 
@@ -2530,8 +2580,12 @@ sbx_cmd_update_script() { # $1=本地文件或 URL（可空 → 用 SCRIPT_UPDAT
   fi
   newv="$(grep -m1 '^SCRIPT_VERSION=' "$tmp" | cut -d'"' -f2)"
   if [ -n "$newv" ] && [ "$newv" = "$oldv" ]; then
-    info "已经是最新版（v$oldv）"
-    rm -f "$tmp"; return 0
+    # 版本号相同不代表内容相同（热修复往往不改版本号），逐字节再比一次
+    if [ -f "$own" ] && cmp -s "$tmp" "$own"; then
+      info "已经是最新版（v$oldv）"
+      rm -f "$tmp"; return 0
+    fi
+    info "版本号相同（v$oldv），但内容有更新，继续覆盖"
   fi
   if [ "$SBX_DRY_RUN" -eq 1 ]; then
     info "[dry-run] 将把 $own 更新为 v${newv:-?}"
