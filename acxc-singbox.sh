@@ -2565,7 +2565,15 @@ sbx_cmd_uninstall() {
   [ "$purge" -eq 1 ] && printf '  另外删除全部节点数据（/etc/acxc-singbox）\n' \
                      || printf '  节点数据会保留在 %s（加 --purge 才删）\n' "$SBX_DATA"
   printf '\n'
-  sbx_ask_yn "确认卸载？" n || { info "已取消"; sbx_back; return 0; }
+  # 交互环境问一次；非交互必须显式带 --yes，避免被脚本误删
+  if [ "$SBX_ASSUME_YES" -ne 1 ]; then
+    if [ "$SBX_TTY_OK" -eq 1 ]; then
+      sbx_ask_yn "确认卸载？" n || { info "已取消"; sbx_back; return 0; }
+    else
+      err "非交互环境卸载请显式加 --yes"
+      return 1
+    fi
+  fi
   sbx_run systemctl stop sing-box 2>/dev/null || true
   sbx_run systemctl disable sing-box 2>/dev/null || true
   sbx_run systemctl stop singbox-porthop 2>/dev/null || true
