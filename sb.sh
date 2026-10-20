@@ -155,6 +155,16 @@ fi
 sbx_die() { err "$*"; return 1; }
 sbx_title() { printf '\n%s\n' "  ${C_BLD}${C_CYN}==== $* ====${C_RST}"; _sbx_log TITLE "==== $* ===="; }
 
+# 当前脚本路径。curl | bash 时 BASH_SOURCE 为空，此时回退到 $0（值是 "bash"，
+# 调用方用 -f 判断即可知道"没有落盘文件"）。set -u 下必须用 :- 兜底。
+sbx_self_path() {
+  if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    printf '%s' "${BASH_SOURCE[0]}"
+  else
+    printf '%s' "$0"
+  fi
+}
+
 # 计算显示宽度（中文/全角按 2 列算）→ SBX_DW
 SBX_DW=0
 sbx_dw() {
@@ -2456,7 +2466,7 @@ sbx_repo_dir() {
     [ -n "$d" ] || continue
     [ -d "$d/.git" ] && { printf '%s' "$d"; return 0; }
   done
-  own="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+  own="$(readlink -f "$(sbx_self_path)" 2>/dev/null || sbx_self_path)"
   own_dir="$(dirname "$own")"
   [ -d "$own_dir/.git" ] && { printf '%s' "$own_dir"; return 0; }
   return 1
@@ -2482,7 +2492,7 @@ sbx_update_from_git() {
 
 sbx_cmd_update_script() { # $1=本地文件或 URL（可空 → 用 SCRIPT_UPDATE_URL）
   local src="${1:-$SCRIPT_UPDATE_URL}" tmp own newv oldv
-  own="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+  own="$(readlink -f "$(sbx_self_path)" 2>/dev/null || sbx_self_path)"
   oldv="$SCRIPT_VERSION"
   if [ -z "$src" ]; then
     # 没配 URL：先试本地 git 仓库（你现在就是这种：脚本在 /opt/ACXC-Sing-Box 里）
@@ -2679,13 +2689,36 @@ sbx_screen_header() { # $1=标题
 
 # 把当前这份脚本装到标准位置，并建一个 sb 快捷命令
 sbx_install_self() {
-  local own
-  own="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
-  [ -f "$own" ] || { warn "找不到脚本自身：$own"; return 1; }
-  if [ "$own" != "$SCRIPT_SELF_PATH" ]; then
+  local own tmp
+  own="$(readlink -f "$(sbx_self_path)" 2>/dev/null || sbx_self_path)"
+  if [ ! -f "$own" ]; then
+    # curl | bash 管道执行时没有落盘文件，直接从更新源拉一份存下来
+    if [ -z "$SCRIPT_UPDATE_URL" ]; then
+      warn "管道执行模式无法定位脚本文件，请先下载脚本再运行"
+      return 1
+    fi
+    info "下载脚本本体 → $SCRIPT_SELF_PATH"
+    if [ "$SBX_DRY_RUN" -eq 1 ]; then
+      info "[dry-run] curl -fsSL $SCRIPT_UPDATE_URL -o $SCRIPT_SELF_PATH"
+    else
+      sbx_run mkdir -p "$(dirname "$SCRIPT_SELF_PATH")" || return 1
+      tmp="$SCRIPT_SELF_PATH.tmp.$$"
+      if ! curl -fsSL --retry 2 --connect-timeout 15 "$SCRIPT_UPDATE_URL" -o "$tmp" 2>/dev/null; then
+        warn "下载失败：$SCRIPT_UPDATE_URL"; rm -f "$tmp"; return 1
+      fi
+      if ! bash -n "$tmp" 2>/dev/null; then
+        warn "下载到的内容校验失败"; rm -f "$tmp"; return 1
+      fi
+      if ! install -m 755 "$tmp" "$SCRIPT_SELF_PATH"; then
+        warn "写入失败"; rm -f "$tmp"; return 1
+      fi
+      rm -f "$tmp"
+    fi
+  elif [ "$own" != "$SCRIPT_SELF_PATH" ]; then
     sbx_run mkdir -p "$(dirname "$SCRIPT_SELF_PATH")" || return 1
     sbx_run install -m 755 "$own" "$SCRIPT_SELF_PATH" || return 1
   fi
+  sbx_run mkdir -p "$(dirname "$SBX_CMD_PATH")" || return 1
   sbx_run ln -sf "$SCRIPT_SELF_PATH" "$SBX_CMD_PATH" || return 1
   # 清掉旧版本留下的 sbx 命令
   [ -L /usr/local/bin/sbx ] && sbx_run rm -f /usr/local/bin/sbx
@@ -2803,7 +2836,7 @@ sbx_cmd_hop_menu() {
 # 诊断：把「正在跑的 / 仓库里的 / 安装位的」三个版本列出来
 sbx_cmd_where() {
   local own repo rv iv link
-  own="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+  own="$(readlink -f "$(sbx_self_path)" 2>/dev/null || sbx_self_path)"
   printf '\n  运行文件   %s\n' "$own"
   printf '  运行版本   v%s\n' "$SCRIPT_VERSION"
   if repo="$(sbx_repo_dir 2>/dev/null)"; then
@@ -2940,7 +2973,7 @@ sbx_quickstart() {
 # 仓库里有新版但正在跑的是旧版时提醒一句（不然会出现"改了半天没生效"）
 sbx_check_stale() {
   local d ver own_dir src
-  own_dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")"
+  own_dir="$(dirname "$(readlink -f "$(sbx_self_path)" 2>/dev/null || sbx_self_path)")"
   for d in "${ACXC_SBX_REPO:-}" /opt/ACXC-Sing-Box "$own_dir"; do
     [ -n "$d" ] || continue
     src="$(sbx_repo_script "$d")" || continue
@@ -3019,7 +3052,7 @@ sbx_main() {
 }
 
 # 被 source（嵌进主脚本）时不自动执行
-if [ "$SBX_EMBEDDED" != "1" ] && [ "${BASH_SOURCE[0]}" = "$0" ]; then
+if [ "$SBX_EMBEDDED" != "1" ] && [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
   sbx_main "$@"
   exit $?
 fi
