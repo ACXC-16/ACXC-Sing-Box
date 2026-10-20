@@ -1931,10 +1931,14 @@ sbx_node_detail() {
   printf '\n'
   if link="$(sbx_link_node "$name" 2>/dev/null)"; then
     printf '%s  %s分享链接%s\n' "${SBX_IND-}" "$C_BLD" "$C_RST"
-    printf '%s  %s\n\n' "${SBX_IND-}" "$link"
+    printf '%s  %s\n' "${SBX_IND-}" "$link"
+    # 这两个能力在命令行里，菜单里不渲染，避免刷屏
+    printf '%s  %sClash 配置：sb --clash %s   ·   二维码：sb --link %s --qr%s\n\n' \
+      "${SBX_IND-}" "$C_DIM" "$name" "$name" "$C_RST"
   else
-    printf '%s  %s该协议没有通用分享链接，请用下面的 Clash 配置或客户端配置%s\n\n' \
+    printf '%s  %s该协议没有通用分享链接，用命令行拿 Clash 配置：%s\n' \
       "${SBX_IND-}" "$C_DIM" "$C_RST"
+    printf '%s  %ssb --clash %s%s\n\n' "${SBX_IND-}" "$C_DIM" "$name" "$C_RST"
   fi
   return 0
 }

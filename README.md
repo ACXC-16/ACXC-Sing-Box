@@ -1,6 +1,6 @@
 # ACXC-Sing-Box
 
-基于 [sing-box](https://sing-box.sagernet.org/) 的 VPS 一键协议脚本：**9 种协议**、同协议多开、一键生成分享链接 / 二维码 / Clash 订阅。
+基于 [sing-box](https://sing-box.sagernet.org/) 的 VPS 一键协议脚本：**9 种协议**、同协议多开、一键生成分享链接。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ACXC-16/ACXC-Sing-Box/main/acxc-singbox.sh | sudo bash
@@ -14,7 +14,7 @@ curl -fsSL https://raw.githubusercontent.com/ACXC-16/ACXC-Sing-Box/main/acxc-sin
 - **9 种协议**：VLESS+Reality、Hysteria2、Shadowsocks 2022、Trojan、AnyTLS、SOCKS5、WireGuard、TUIC、Snell
 - **同协议多开**：每个节点独立端口 / 凭据 / 备注，客户端里能区分
 - **改不炸**：渲染 → `sing-box check` → 热重载 → 验活，任何一步失败自动回滚
-- **分享三件套**：分享链接、终端二维码、Clash/mihomo 订阅
+- **分享**：菜单里直接给分享链接；Clash 配置用 `sb --clash` / `sb --sub`，终端二维码用 `sb --link 名字 --qr`
 - **自带自检**：`sb --self-test` 用真实 sing-box 校验全部协议，不碰现有节点
 
 ## 协议
