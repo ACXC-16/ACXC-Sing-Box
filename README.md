@@ -6,7 +6,8 @@
 curl -fsSL https://acxc-16.github.io/ACXC-Sing-Box/sb.sh | sudo bash
 ```
 
-<sub>Debian 12 / Ubuntu 22.04+ · root · 需要能访问 GitHub · 首次运行会装好 sing-box 并生成 `sb` 命令</sub>
+> **环境**　仅实测 Debian 12 / Ubuntu 22.04+，其它发行版未验证；需要 root 权限，需要能访问 GitHub
+> **装完**　会生成快捷命令 `sb`，之后直接输入 `sb` 打开菜单，不用再记脚本路径
 
 <sub>访问不了 `github.io` 时用备用地址：`curl -fsSL https://raw.githubusercontent.com/ACXC-16/ACXC-Sing-Box/main/sb.sh | sudo bash`</sub>
 
