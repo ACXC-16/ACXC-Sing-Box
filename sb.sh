@@ -6,7 +6,7 @@
 #  仓库: https://github.com/ACXC-16/ACXC-Sing-Box
 # -----------------------------------------------------------------------------
 #  独立运行：
-#      bash acxc-singbox.sh
+#      bash sb.sh
 #
 #  设计原则：
 #    * 一个"节点"= 一个协议实例 = 独立端口 + 独立凭据 + 独立备注，同协议可开 N 个
@@ -2445,6 +2445,15 @@ sbx_self_test() {
 }
 
 # ============================== 脚本自更新 ==================================
+# 在某个目录里找脚本本体（优先新名 sb.sh，兼容旧的 acxc-singbox.sh）
+sbx_repo_script() { # $1=目录 → 输出完整路径
+  local d="$1" n
+  for n in sb.sh acxc-singbox.sh; do
+    [ -f "$d/$n" ] && { printf '%s' "$d/$n"; return 0; }
+  done
+  return 1
+}
+
 # 找一个含有本脚本的 git 仓库（默认 /opt/ACXC-Sing-Box）
 sbx_repo_dir() {
   local d own own_dir
@@ -2471,8 +2480,9 @@ sbx_update_from_git() {
     err "git pull 失败（本地有未提交改动？或网络不通）"
     return 1
   fi
-  [ -f "$repo/acxc-singbox.sh" ] || { err "仓库里找不到 acxc-singbox.sh"; return 1; }
-  sbx_cmd_update_script "$repo/acxc-singbox.sh"
+  local src
+  src="$(sbx_repo_script "$repo")" || { err "仓库里找不到脚本文件（sb.sh）"; return 1; }
+  sbx_cmd_update_script "$src"
 }
 
 sbx_cmd_update_script() { # $1=本地文件或 URL（可空 → 用 SCRIPT_UPDATE_URL）
@@ -2802,7 +2812,7 @@ sbx_cmd_where() {
   printf '\n  运行文件   %s\n' "$own"
   printf '  运行版本   v%s\n' "$SCRIPT_VERSION"
   if repo="$(sbx_repo_dir 2>/dev/null)"; then
-    rv="$(grep -m1 '^SCRIPT_VERSION=' "$repo/acxc-singbox.sh" 2>/dev/null | cut -d'"' -f2)"
+    rv="$(grep -m1 '^SCRIPT_VERSION=' "$(sbx_repo_script "$repo")" 2>/dev/null | cut -d'"' -f2)"
     printf '  仓库目录   %s（v%s）\n' "$repo" "${rv:-?}"
   else
     printf '  仓库目录   未找到（/opt/ACXC-Sing-Box 不存在或不是 git 仓库）\n'
@@ -2934,13 +2944,13 @@ sbx_quickstart() {
 
 # 仓库里有新版但正在跑的是旧版时提醒一句（不然会出现"改了半天没生效"）
 sbx_check_stale() {
-  local d ver own_dir
+  local d ver own_dir src
   own_dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")"
   for d in "${ACXC_SBX_REPO:-}" /opt/ACXC-Sing-Box "$own_dir"; do
     [ -n "$d" ] || continue
-    [ -f "$d/acxc-singbox.sh" ] || continue
+    src="$(sbx_repo_script "$d")" || continue
     [ "$d" = "$own_dir" ] && continue      # 自己就是仓库里那份，不用提示
-    ver="$(grep -m1 '^SCRIPT_VERSION=' "$d/acxc-singbox.sh" 2>/dev/null | cut -d'"' -f2)"
+    ver="$(grep -m1 '^SCRIPT_VERSION=' "$src" 2>/dev/null | cut -d'"' -f2)"
     [ -n "$ver" ] || continue
     [ "$ver" = "$SCRIPT_VERSION" ] && continue
     warn "仓库里已是 v${ver}，但你运行的是 v${SCRIPT_VERSION}（菜单 12 更新脚本）"

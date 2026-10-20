@@ -3,7 +3,7 @@
 基于 [sing-box](https://sing-box.sagernet.org/) 的 VPS 一键协议脚本 —— 9 种协议、同协议多开、一键出分享链接。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ACXC-16/ACXC-Sing-Box/main/acxc-singbox.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/ACXC-16/ACXC-Sing-Box/main/sb.sh | sudo bash
 ```
 
 <sub>Debian 12 / Ubuntu 22.04+ · root · 需要能访问 GitHub · 首次运行会装好 sing-box 并生成 `sb` 命令</sub>

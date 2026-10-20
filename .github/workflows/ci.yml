@@ -12,18 +12,18 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: bash -n
-        run: bash -n acxc-singbox.sh
+        run: bash -n sb.sh
 
       - name: shellcheck
-        run: shellcheck -s bash acxc-singbox.sh
+        run: shellcheck -s bash sb.sh
 
       - name: 文件编码检查（LF / 无 BOM）
         run: |
-          if grep -q $'\r' acxc-singbox.sh; then
+          if grep -q $'\r' sb.sh; then
             echo "::error::文件里出现了 CRLF，Linux 上会跑不起来"
             exit 1
           fi
-          if [ "$(head -c 3 acxc-singbox.sh | xxd -p)" = "efbbbf" ]; then
+          if [ "$(head -c 3 sb.sh | xxd -p)" = "efbbbf" ]; then
             echo "::error::文件带 BOM"
             exit 1
           fi
