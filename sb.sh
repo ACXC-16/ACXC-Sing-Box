@@ -26,7 +26,7 @@ set -o pipefail
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
 SCRIPT_VERSION="1.0.0"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
-SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
+SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-https://raw.githubusercontent.com/ACXC-16/ACXC-Sing-Box/main/sb.sh}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
 SBX_CMD_PATH="${ACXC_SBX_CMD:-/usr/local/bin/sb}"
 
