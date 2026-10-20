@@ -10,7 +10,9 @@ curl -fsSL https://acxc-16.github.io/ACXC-Sing-Box/sb.sh | sudo bash
 
 ## 协议
 
-VLESS+Reality · Hysteria2 · Shadowsocks 2022 · Trojan · AnyTLS · SOCKS5 · WireGuard · TUIC v5 · Snell
+- **TCP**：VLESS+Reality、Trojan、AnyTLS、SOCKS5、Snell
+- **QUIC / UDP**：Hysteria2、TUIC v5、WireGuard
+- **TCP + UDP**：Shadowsocks 2022
 
 ## 用法
 
