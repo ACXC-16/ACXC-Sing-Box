@@ -8,13 +8,17 @@ curl -fsSL https://acxc-16.github.io/ACXC-Sing-Box/sb.sh | sudo bash
 
 **Debian 12 / Ubuntu 22.04+ · root · 装完输入 `sb`**
 
-## 协议
+## 🔌 支持协议
 
-| 传输 | 协议 |
-|---|---|
-| TCP | VLESS+Reality、Trojan、AnyTLS、SOCKS5、Snell |
-| QUIC / UDP | Hysteria2、TUIC v5、WireGuard |
-| TCP + UDP | Shadowsocks 2022 |
+- VLESS TCP + XTLS Vision + Reality（推荐）
+- Shadowsocks 2022（推荐）
+- Hysteria2（UDP 端口跳跃）
+- Trojan TLS
+- AnyTLS（TLS）
+- SOCKS5（账号密码）
+- WireGuard（UDP）
+- TUIC v5（QUIC）
+- Snell v4/v5/v6
 
 ## 用法
 
@@ -62,4 +66,4 @@ sb --install / --update-singbox / --update-script / --uninstall
 
 <sub>仅供学习研究 · [MIT](LICENSE)</sub>
 
-<sub>脚本菜单抄袭 <a href="https://github.com/cshaizhihao/OU-SB">cshaizhihao/OU-SB</a>，有问题别找我</sub>
+<sub>菜单布局参考 <a href="https://github.com/cshaizhihao/OU-SB">cshaizhihao/OU-SB</a>，感谢原作者</sub>
