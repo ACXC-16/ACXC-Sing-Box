@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  ACXC-SINGBOX 一键协议脚本 —— 基于 sing-box 的服务端协议管理器
-#  版本: 0.1.0
+#  版本: 1.0.0
 #  许可: MIT
+#  仓库: https://github.com/ACXC-16/ACXC-Sing-Box
 # -----------------------------------------------------------------------------
 #  独立运行：
 #      bash acxc-singbox.sh
@@ -23,7 +24,7 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="ACXC-SINGBOX 一键协议脚本"
-SCRIPT_VERSION="0.2.4"
+SCRIPT_VERSION="1.0.0"
 # 脚本自身的更新源。留空 = 未配置（菜单里会提示），填 GitHub raw / release 直链即可启用自动更新
 SCRIPT_UPDATE_URL="${ACXC_SBX_UPDATE_URL:-}"
 SCRIPT_SELF_PATH="${ACXC_SBX_SELF:-/usr/local/share/acxc-singbox/singbox.sh}"
@@ -2816,7 +2817,8 @@ ${SCRIPT_NAME} v${SCRIPT_VERSION}
 用法:
   bash $0                         交互式菜单
   bash $0 --install [--sb-version 1.14.3]
-  bash $0 --add reality|hysteria2|shadowsocks|trojan [--name 名字] [--port 端口] [--sni 域名] [--remark 备注]
+  bash $0 --add <协议> [--name 名字] [--port 端口] [--sni 域名] [--remark 备注]
+      协议：reality | hysteria2 | shadowsocks | trojan | anytls | socks | wireguard | tuic | snell
   bash $0 --list | --show <名字> | --link <名字> [--qr]
   bash $0 --clash <名字>           只输出这一个节点的 Clash 配置
   bash $0 --sub [clash|links]      生成订阅文件（clash.yaml / links.txt）
@@ -2824,7 +2826,7 @@ ${SCRIPT_NAME} v${SCRIPT_VERSION}
   bash $0 --hop <名字> <端口段|off>
   bash $0 --start | --stop | --restart | --status | --log [行数]
   bash $0 --update-singbox [--sb-version x.y.z]
-  bash $0 --self-test               用临时目录验证四种协议配置是否合法
+  bash $0 --self-test               用临时目录验证九种协议配置是否合法
   bash $0 --where                   显示运行的/仓库的/安装位的版本，排查"改了没生效"
   bash $0 --update-script [本地文件|URL]
   bash $0 --uninstall [--purge]
