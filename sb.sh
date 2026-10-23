@@ -331,6 +331,15 @@ sbx_proto_short() {
   esac
 }
 
+# base64 单行输出。GNU 有 -w0，BusyBox（Alpine）没有，得自己去掉换行
+sbx_b64() {
+  if printf 'x' | base64 -w0 >/dev/null 2>&1; then
+    base64 -w0
+  else
+    base64 | tr -d '\n'
+  fi
+}
+
 # 只向 stdout 输出密码
 sbx_gen_password() {
   local len="${1:-20}" pw=""
@@ -428,42 +437,95 @@ sbx_os_pretty() {
   printf '%s' "$p"
 }
 
-sbx_check_os() {
-  [ "$SBX_DRY_RUN" -eq 1 ] && return 0
-  sbx_have apt-get && return 0
+# ---- 平台后端：Debian/Ubuntu（apt + systemd）或 Alpine（apk + OpenRC）----
+SBX_INIT="${ACXC_SBX_INIT:-}"     # systemd | openrc，空=自动探测
+SBX_PKG="${ACXC_SBX_PKG:-}"       # apt | apk，空=跟随 SBX_INIT
+SBX_OS_ID=""
+SBX_OS_NAME=""
 
-  # PATH 被改坏（例如 sudo 的 secure_path 动过）时，按标准路径兜底再试一次
-  if [ -x /usr/bin/apt-get ] || [ -x /bin/apt-get ]; then
-    PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-    export PATH
-    return 0
+# 服务单元的路径随后端不同（Alpine 放到 /etc/init.d）
+sbx_apply_platform_paths() {
+  if [ "$SBX_INIT" = "openrc" ]; then
+    SBX_UNIT="/etc/init.d/sing-box"
+    SBX_HOP_UNIT="/etc/init.d/singbox-porthop"
+  else
+    SBX_UNIT="/etc/systemd/system/sing-box.service"
+    SBX_HOP_UNIT="/etc/systemd/system/singbox-porthop.service"
+  fi
+}
+
+sbx_detect_platform() {
+  if [ -r /etc/os-release ]; then
+    SBX_OS_ID="$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | head -1 | tr -d '"')"
+    SBX_OS_NAME="$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null | head -1 | tr -d '"')"
+  fi
+  if [ -z "$SBX_INIT" ]; then
+    if [ "$SBX_OS_ID" = "alpine" ]; then
+      SBX_INIT=openrc
+    elif sbx_have systemctl; then
+      SBX_INIT=systemd
+    elif sbx_have rc-service; then
+      SBX_INIT=openrc
+    else
+      SBX_INIT=systemd
+    fi
+  fi
+  if [ -z "$SBX_PKG" ]; then
+    if [ "$SBX_INIT" = "openrc" ]; then SBX_PKG=apk; else SBX_PKG=apt; fi
+  fi
+  sbx_apply_platform_paths
+  return 0
+}
+
+# 装包：apt / apk
+sbx_pkg_install() { # $@=包名
+  [ "$#" -gt 0 ] || return 0
+  case "$SBX_PKG" in
+    apk) sbx_run apk add --no-cache "$@" ;;
+    *)   sbx_run env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
+  esac
+}
+
+sbx_check_os() {
+  [ "$SBX_DRY_RUN" -eq 1 ] && { sbx_detect_platform; return 0; }
+  sbx_detect_platform
+
+  if [ "$SBX_INIT" = "openrc" ]; then
+    sbx_have apk && return 0
+    if [ -x /sbin/apk ] || [ -x /usr/sbin/apk ]; then
+      PATH="/sbin:/usr/sbin:$PATH"; export PATH
+      return 0
+    fi
+  else
+    sbx_have apt-get && return 0
+    # PATH 被改坏（例如 sudo 的 secure_path 动过）时，按标准路径兜底再试一次
+    if [ -x /usr/bin/apt-get ] || [ -x /bin/apt-get ]; then
+      PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+      export PATH
+      return 0
+    fi
   fi
 
   if [ "${ACXC_SBX_FORCE_OS:-0}" = "1" ]; then
-    warn "找不到 apt-get，但已按 ACXC_SBX_FORCE_OS=1 强制继续"
+    warn "找不到包管理器，但已按 ACXC_SBX_FORCE_OS=1 强制继续"
     return 0
   fi
 
-  local id="" name=""
-  if [ -r /etc/os-release ]; then
-    id="$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | head -1 | tr -d '"')"
-    name="$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null | head -1 | tr -d '"')"
-  fi
-
-  err "本脚本只支持 Debian / Ubuntu（找不到 apt-get）"
-  printf '  检测到的系统: %s\n' "${name:-未知}${id:+（ID=$id）}"
+  err "找不到包管理器（支持 apt 或 apk）"
+  printf '  检测到的系统: %s\n' "${SBX_OS_NAME:-未知}${SBX_OS_ID:+（ID=$SBX_OS_ID）}"
+  printf '  服务后端    : %s\n' "$SBX_INIT"
   printf '  当前 PATH   : %s\n' "$PATH"
-  case "$id" in
+  case "$SBX_OS_ID" in
     debian|ubuntu|raspbian|devuan|linuxmint|pop|kali|armbian|deepin|uos|neon)
       printf '  看着是 Debian 系却没有 apt-get，先试试：/usr/bin/apt-get --version\n' ;;
     alpine)
-      printf '  Alpine 用 apk，本脚本不适用（服务管理还依赖 systemd）。\n' ;;
+      printf '  Alpine 需要 apk：/sbin/apk --version；另外本脚本需要 bash（apk add bash）\n' ;;
     centos|rhel|rocky|almalinux|fedora|openeuler|anolis|kylin)
-      printf '  RHEL 系用 dnf/yum，本脚本只适配了 apt，暂不支持。\n' ;;
+      printf '  RHEL 系用 dnf/yum，暂不支持（目前只适配了 apt 与 apk）。\n' ;;
     arch|manjaro)
-      printf '  Arch 用 pacman，本脚本只适配了 apt，暂不支持。\n' ;;
+      printf '  Arch 用 pacman，暂不支持（目前只适配了 apt 与 apk）。\n' ;;
     *)
-      printf '  需要 Debian/Ubuntu 这类带 apt + systemd 的系统。\n' ;;
+      printf '  需要 Debian/Ubuntu（apt+systemd）或 Alpine（apk+OpenRC）。\n' ;;
   esac
   printf '  确认环境可用后可强行继续：ACXC_SBX_FORCE_OS=1 bash <(curl -fsSL %s)\n' "$SCRIPT_UPDATE_URL"
   return 1
@@ -475,23 +537,58 @@ sbx_check_deps() {
   sbx_have jq      || missing="$missing jq"
   sbx_have curl    || missing="$missing curl"
   sbx_have openssl || missing="$missing openssl"
+  # Alpine 默认没有 iproute2，缺了 ss 就没法验证端口是否在监听
+  if [ "$SBX_INIT" = "openrc" ]; then
+    sbx_have ss || missing="$missing iproute2"
+  fi
   [ -z "$missing" ] && return 0
   warn "缺少依赖：${missing# }"
   if [ "$SBX_ASSUME_YES" -eq 0 ]; then
-    if ! sbx_ask_yn "现在用 apt 安装${missing# }？" y; then
+    if ! sbx_ask_yn "现在用 ${SBX_PKG} 安装${missing# }？" y; then
       err "缺少依赖无法继续"
       return 1
     fi
   fi
   # shellcheck disable=SC2086
-  sbx_run env DEBIAN_FRONTEND=noninteractive apt-get install -y $missing || {
-    err "依赖安装失败"; return 1; }
+  sbx_pkg_install $missing || { err "依赖安装失败"; return 1; }
   ok "依赖已安装"
   return 0
 }
 
-# ============================== systemd / 服务 ==============================
-sbx_svc_active() { systemctl is-active --quiet sing-box 2>/dev/null; }
+# ============================== 服务控制（systemd / OpenRC）=================
+sbx_svc_ctl() { # $1=服务名 $2=start|stop|restart|reload|status
+  case "$SBX_INIT" in
+    openrc) rc-service "$1" "$2" ;;
+    *)      systemctl "$2" "$1" ;;
+  esac
+}
+
+sbx_svc_autostart() { # $1=服务名 $2=on|off
+  case "$SBX_INIT" in
+    openrc)
+      if [ "$2" = "on" ]; then rc-update add "$1" default; else rc-update del "$1" default 2>/dev/null; fi ;;
+    *)
+      if [ "$2" = "on" ]; then systemctl enable "$1"; else systemctl disable "$1"; fi ;;
+  esac
+}
+
+sbx_svc_daemon_reload() {
+  [ "$SBX_INIT" = "systemd" ] && systemctl daemon-reload 2>/dev/null
+  return 0
+}
+
+sbx_svc_active() {
+  case "$SBX_INIT" in
+    openrc) rc-service sing-box status >/dev/null 2>&1 ;;
+    *)      systemctl is-active --quiet sing-box 2>/dev/null ;;
+  esac
+}
+
+# 服务启动时间：systemd 能直接读；OpenRC 下不显示（BusyBox 没有 ps -o etime）
+sbx_svc_since() {
+  [ "$SBX_INIT" = "systemd" ] || return 0
+  systemctl show -p ActiveEnterTimestamp --value sing-box 2>/dev/null
+}
 
 sbx_sb_installed() { [ -x "$SBX_BIN" ]; }
 
@@ -509,7 +606,29 @@ sbx_sb_version() {
 sbx_unit_write() {
   local tmp
   tmp="$(mktemp)" || return 1
-  cat >"$tmp" <<EOF
+  if [ "$SBX_INIT" = "openrc" ]; then
+    cat >"$tmp" <<EOF
+#!/sbin/openrc-run
+description="sing-box service (ACXC-SINGBOX)"
+command="$SBX_BIN"
+command_args="run -c $SBX_CONF -C $SBX_CONFD"
+command_background="yes"
+pidfile="/run/sing-box.pid"
+command_user="root"
+
+depend() {
+  need net
+  after firewall
+}
+
+reload() {
+  ebegin "Reloading sing-box"
+  start-stop-daemon --signal HUP --pidfile "\$pidfile"
+  eend \$?
+}
+EOF
+  else
+    cat >"$tmp" <<EOF
 [Unit]
 Description=sing-box service (ACXC-SINGBOX)
 Documentation=https://sing-box.sagernet.org
@@ -530,15 +649,16 @@ AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 [Install]
 WantedBy=multi-user.target
 EOF
+  fi
   if [ "$SBX_DRY_RUN" -eq 1 ]; then
     printf '%s\n' "${C_DIM}  [dry-run] 将写入 $SBX_UNIT：${C_RST}"
     sed 's/^/    /' "$tmp"
     rm -f "$tmp"
     return 0
   fi
-  install -m 644 "$tmp" "$SBX_UNIT" || { rm -f "$tmp"; return 1; }
+  install -m 755 "$tmp" "$SBX_UNIT" || { rm -f "$tmp"; return 1; }
   rm -f "$tmp"
-  systemctl daemon-reload 2>/dev/null || true
+  sbx_svc_daemon_reload
   return 0
 }
 
@@ -726,7 +846,7 @@ sbx_node_cache_drop() { # $1=名字（空=全部）
   local k
   for k in "${!SBX_NV[@]}"; do
     case "$k" in
-      "$1".*) unset 'SBX_NV[$k]' ;;
+      "$1".*) unset "SBX_NV[$k]" ;;
     esac
   done
   return 0
@@ -1259,11 +1379,12 @@ sbx_check_config() {
 
 sbx_svc_reload() {
   if ! sbx_svc_active; then
-    sbx_run systemctl start sing-box || return 1
+    sbx_run sbx_svc_ctl sing-box start || return 1
     return 0
   fi
-  if sbx_run systemctl reload sing-box 2>/dev/null; then return 0; fi
-  sbx_run systemctl restart sing-box
+  # OpenRC 的 reload 依赖 init 脚本里的 reload()；失败就退回 restart
+  if sbx_run sbx_svc_ctl sing-box reload 2>/dev/null; then return 0; fi
+  sbx_run sbx_svc_ctl sing-box restart
 }
 
 # 等端口进入监听状态；$1=端口 $2=tcp|udp
@@ -1376,7 +1497,7 @@ sbx_link_node() { # $1=名字 → stdout
     shadowsocks)
       local ui
       ui="$(printf '%s:%s' "${SBX_NV["$name.method"]-}" "${SBX_NV["$name.password"]-}" \
-            | base64 -w0 2>/dev/null | tr '+/' '-_' | tr -d '=')"
+            | sbx_b64 | tr '+/' '-_' | tr -d '=')"
       printf 'ss://%s@%s:%s#%s' "$ui" "$url_h" "$port" "$remark"
       ;;
     hysteria2)
@@ -1456,7 +1577,7 @@ sbx_qr() { # $1=内容
   if ! sbx_have qrencode; then
     info "二维码需要 qrencode"
     if [ "$SBX_ASSUME_YES" -eq 1 ] || sbx_ask_yn "现在安装 qrencode？" y; then
-      sbx_run env DEBIAN_FRONTEND=noninteractive apt-get install -y qrencode >/dev/null 2>&1 || true
+      sbx_pkg_install qrencode >/dev/null 2>&1 || true
     fi
   fi
   if ! sbx_have qrencode; then
@@ -1668,9 +1789,33 @@ sbx_hop_render() {
 }
 
 sbx_hop_unit_write() {
-  local tmp
+  local tmp nft
   tmp="$(mktemp)" || return 1
-  cat >"$tmp" <<EOF
+  nft="$(command -v nft 2>/dev/null || printf '/usr/sbin/nft')"
+  if [ "$SBX_INIT" = "openrc" ]; then
+    cat >"$tmp" <<EOF
+#!/sbin/openrc-run
+description="sing-box port hopping (ACXC-SINGBOX)"
+
+depend() {
+  need net
+  after firewall
+}
+
+start() {
+  ebegin "Applying port hopping rules"
+  $nft -f $SBX_HOP_NFT
+  eend \$?
+}
+
+stop() {
+  ebegin "Removing port hopping rules"
+  $nft delete table inet sbx_hop 2>/dev/null
+  eend 0
+}
+EOF
+  else
+    cat >"$tmp" <<EOF
 [Unit]
 Description=sing-box port hopping (ACXC-SINGBOX)
 After=network-online.target
@@ -1679,21 +1824,22 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStartPre=-/usr/sbin/nft delete table inet sbx_hop
-ExecStart=/usr/sbin/nft -f $SBX_HOP_NFT
-ExecStop=-/usr/sbin/nft delete table inet sbx_hop
+ExecStartPre=-$nft delete table inet sbx_hop
+ExecStart=$nft -f $SBX_HOP_NFT
+ExecStop=-$nft delete table inet sbx_hop
 
 [Install]
 WantedBy=multi-user.target
 EOF
+  fi
   if [ "$SBX_DRY_RUN" -eq 1 ]; then
     printf '%s\n' "${C_DIM}  [dry-run] 将写入 $SBX_HOP_UNIT${C_RST}"
     rm -f "$tmp"
     return 0
   fi
-  install -m 644 "$tmp" "$SBX_HOP_UNIT" || { rm -f "$tmp"; return 1; }
+  install -m 755 "$tmp" "$SBX_HOP_UNIT" || { rm -f "$tmp"; return 1; }
   rm -f "$tmp"
-  systemctl daemon-reload 2>/dev/null || true
+  sbx_svc_daemon_reload
   return 0
 }
 
@@ -1719,7 +1865,7 @@ sbx_hop_apply() {
   if ! sbx_have nft; then
     warn "端口跳跃需要 nftables"
     if [ "$SBX_ASSUME_YES" -eq 1 ] || sbx_ask_yn "现在安装 nftables？" y; then
-      sbx_run env DEBIAN_FRONTEND=noninteractive apt-get install -y nftables || {
+      sbx_pkg_install nftables || {
         err "nftables 安装失败"; return 1; }
     else
       return 1
@@ -1741,16 +1887,17 @@ sbx_hop_apply() {
   sbx_hop_unit_write || return 1
   # 一条跳跃规则都不剩了：把 unit 停掉，别让它拿着不存在的规则文件报错
   if [ ! -f "$SBX_HOP_NFT" ]; then
-    systemctl disable --now singbox-porthop >/dev/null 2>&1 || true
+    sbx_svc_ctl singbox-porthop stop >/dev/null 2>&1 || true
+    sbx_svc_autostart singbox-porthop off >/dev/null 2>&1 || true
     ok "端口跳跃已全部关闭"
     return 0
   fi
-  systemctl enable singbox-porthop >/dev/null 2>&1 || true
-  if ! systemctl restart singbox-porthop 2>/dev/null; then
+  sbx_svc_autostart singbox-porthop on >/dev/null 2>&1 || true
+  if ! sbx_svc_ctl singbox-porthop restart 2>/dev/null; then
     err "nftables 规则应用失败，已回退"
     sbx_node_set "$name" hop "" >/dev/null 2>&1 || true
     sbx_hop_render >/dev/null 2>&1 || true
-    systemctl restart singbox-porthop >/dev/null 2>&1 || true
+    sbx_svc_ctl singbox-porthop restart >/dev/null 2>&1 || true
     return 1
   fi
   ok "端口跳跃已生效"
@@ -1829,6 +1976,8 @@ sbx_install_singbox() {
 SBX_LOGROTATE="/etc/logrotate.d/sing-box"
 sbx_logrotate_write() {
   local tmp
+  # Alpine 默认不带 logrotate，跳过（sing-box 日志靠 log 级别控制）
+  [ "$SBX_INIT" = "openrc" ] && return 0
   [ "$SBX_DRY_RUN" -eq 1 ] && { info "[dry-run] 将写入 $SBX_LOGROTATE"; return 0; }
   tmp="$(mktemp)" || return 1
   cat >"$tmp" <<'EOF'
@@ -1864,8 +2013,8 @@ sbx_cmd_install() {
   sbx_unit_write || return 1
   sbx_logrotate_write || true
   if [ "$SBX_DRY_RUN" -eq 0 ]; then
-    systemctl enable sing-box >/dev/null 2>&1 || true
-    systemctl restart sing-box || { err "启动失败，看日志：journalctl -u sing-box -n 30"; return 1; }
+    sbx_svc_autostart sing-box on >/dev/null 2>&1 || true
+    sbx_svc_ctl sing-box restart || { err "启动失败，看日志：sb --log 30"; return 1; }
     sleep 1
     if sbx_svc_active; then
       ok "sing-box 已启动"
@@ -1912,13 +2061,13 @@ sbx_cmd_update_singbox() {
   [ -x "$SBX_BIN" ] && cp -a "$SBX_BIN" "${SBX_BIN}.bak" 2>/dev/null
   install -m 755 "$newbin" "$SBX_BIN" || { rm -rf "$tmpdir"; return 1; }
   rm -rf "$tmpdir"
-  if systemctl restart sing-box 2>/dev/null; then
+  if sbx_svc_ctl sing-box restart 2>/dev/null; then
     sleep 1
     if sbx_svc_active; then ok "已升级到 v${ver}"; return 0; fi
   fi
   warn "新版启动失败，回退到旧版本"
   [ -f "${SBX_BIN}.bak" ] && install -m 755 "${SBX_BIN}.bak" "$SBX_BIN"
-  systemctl restart sing-box >/dev/null 2>&1 || true
+  sbx_svc_ctl sing-box restart >/dev/null 2>&1 || true
   err "升级失败，已回退"
   [ "$okflag" -eq 0 ] && return 1
   return 1
@@ -2366,9 +2515,9 @@ sbx_cmd_sub() { # $1=clash|links
 # ============================== 服务 / 信息 =================================
 sbx_cmd_service() { # $1=start|stop|restart|reload|status
   case "$1" in
-    start)   sbx_run systemctl start sing-box && ok "已启动" ;;
-    stop)    sbx_run systemctl stop sing-box && ok "已停止" ;;
-    restart) sbx_run systemctl restart sing-box && ok "已重启" ;;
+    start)   sbx_run sbx_svc_ctl sing-box start && ok "已启动" ;;
+    stop)    sbx_run sbx_svc_ctl sing-box stop && ok "已停止" ;;
+    restart) sbx_run sbx_svc_ctl sing-box restart && ok "已重启" ;;
     reload)  sbx_svc_reload && ok "已热重载" ;;
     status)  ;;
     *) return 1 ;;
@@ -2400,7 +2549,8 @@ sbx_cmd_info() {
     sbx_kv "sing-box" "$(sbx_sb_version 2>/dev/null)"
     if sbx_svc_active; then
       sbx_kv "服务状态" "运行中"
-      sbx_kv "启动时间" "$(systemctl show -p ActiveEnterTimestamp --value sing-box 2>/dev/null)"
+      local since; since="$(sbx_svc_since)"
+      [ -n "$since" ] && sbx_kv "启动时间" "$since"
     else
       sbx_kv "服务状态" "已停止"
     fi
@@ -2420,9 +2570,14 @@ sbx_cmd_info() {
 sbx_cmd_log() {
   local n="${1:-40}"
   sbx_screen_header "运行日志"
-  if sbx_have journalctl; then
+  if [ "$SBX_INIT" = "systemd" ] && sbx_have journalctl; then
     printf '%s\n' "${C_BLD}最近 ${n} 行（journalctl -u sing-box）：${C_RST}"
     journalctl -u sing-box -n "$n" --no-pager 2>/dev/null || true
+  elif [ -f /var/log/sing-box.log ]; then
+    printf '%s\n' "${C_BLD}最近 ${n} 行（/var/log/sing-box.log）：${C_RST}"
+    tail -n "$n" /var/log/sing-box.log 2>/dev/null || true
+  else
+    warn "没有找到 sing-box 日志（/var/log/sing-box.log）"
   fi
   if [ -n "${LOG_FILE:-}" ] && [ -f "$LOG_FILE" ]; then
     printf '\n%s\n' "${C_BLD}脚本日志 ${LOG_FILE}：${C_RST}"
@@ -2682,13 +2837,13 @@ sbx_cmd_uninstall() {
       return 1
     fi
   fi
-  sbx_run systemctl stop sing-box 2>/dev/null || true
-  sbx_run systemctl disable sing-box 2>/dev/null || true
-  sbx_run systemctl stop singbox-porthop 2>/dev/null || true
-  sbx_run systemctl disable singbox-porthop 2>/dev/null || true
+  sbx_run sbx_svc_ctl sing-box stop 2>/dev/null || true
+  sbx_run sbx_svc_autostart sing-box off 2>/dev/null || true
+  sbx_run sbx_svc_ctl singbox-porthop stop 2>/dev/null || true
+  sbx_run sbx_svc_autostart singbox-porthop off 2>/dev/null || true
   [ "$SBX_DRY_RUN" -eq 0 ] && { nft delete table inet sbx_hop 2>/dev/null || true; }
   sbx_run rm -f "$SBX_UNIT" "$SBX_HOP_UNIT" "$SBX_LOGROTATE"
-  sbx_run systemctl daemon-reload 2>/dev/null || true
+  sbx_svc_daemon_reload
   sbx_run rm -f "$SBX_BIN" "${SBX_BIN}.bak"
   sbx_run rm -rf "$SBX_DIR"
   [ "$purge" -eq 1 ] && sbx_run rm -rf "$SBX_DATA"
