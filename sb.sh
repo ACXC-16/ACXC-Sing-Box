@@ -3081,7 +3081,10 @@ sbx_cmd_hop_menu() {
 sbx_cmd_where() {
   local own repo rv iv link
   own="$(readlink -f "$(sbx_self_path)" 2>/dev/null || sbx_self_path)"
-  printf '\n  运行文件   %s\n' "$own"
+  sbx_detect_platform
+  printf '\n  系统       %s（ID=%s）\n' "${SBX_OS_NAME:-未知}" "${SBX_OS_ID:-?}"
+  printf '  服务后端   %s + %s\n' "$SBX_INIT" "$SBX_PKG"
+  printf '  运行文件   %s\n' "$own"
   printf '  运行版本   v%s\n' "$SCRIPT_VERSION"
   if repo="$(sbx_repo_dir 2>/dev/null)"; then
     rv="$(grep -m1 '^SCRIPT_VERSION=' "$(sbx_repo_script "$repo")" 2>/dev/null | cut -d'"' -f2)"
