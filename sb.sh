@@ -429,9 +429,44 @@ sbx_os_pretty() {
 }
 
 sbx_check_os() {
-  if [ "$SBX_DRY_RUN" -eq 1 ]; then return 0; fi
-  sbx_have apt-get || { err "本脚本只支持 Debian / Ubuntu（找不到 apt-get）"; return 1; }
-  return 0
+  [ "$SBX_DRY_RUN" -eq 1 ] && return 0
+  sbx_have apt-get && return 0
+
+  # PATH 被改坏（例如 sudo 的 secure_path 动过）时，按标准路径兜底再试一次
+  if [ -x /usr/bin/apt-get ] || [ -x /bin/apt-get ]; then
+    PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+    export PATH
+    return 0
+  fi
+
+  if [ "${ACXC_SBX_FORCE_OS:-0}" = "1" ]; then
+    warn "找不到 apt-get，但已按 ACXC_SBX_FORCE_OS=1 强制继续"
+    return 0
+  fi
+
+  local id="" name=""
+  if [ -r /etc/os-release ]; then
+    id="$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | head -1 | tr -d '"')"
+    name="$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null | head -1 | tr -d '"')"
+  fi
+
+  err "本脚本只支持 Debian / Ubuntu（找不到 apt-get）"
+  printf '  检测到的系统: %s\n' "${name:-未知}${id:+（ID=$id）}"
+  printf '  当前 PATH   : %s\n' "$PATH"
+  case "$id" in
+    debian|ubuntu|raspbian|devuan|linuxmint|pop|kali|armbian|deepin|uos|neon)
+      printf '  看着是 Debian 系却没有 apt-get，先试试：/usr/bin/apt-get --version\n' ;;
+    alpine)
+      printf '  Alpine 用 apk，本脚本不适用（服务管理还依赖 systemd）。\n' ;;
+    centos|rhel|rocky|almalinux|fedora|openeuler|anolis|kylin)
+      printf '  RHEL 系用 dnf/yum，本脚本只适配了 apt，暂不支持。\n' ;;
+    arch|manjaro)
+      printf '  Arch 用 pacman，本脚本只适配了 apt，暂不支持。\n' ;;
+    *)
+      printf '  需要 Debian/Ubuntu 这类带 apt + systemd 的系统。\n' ;;
+  esac
+  printf '  确认环境可用后可强行继续：ACXC_SBX_FORCE_OS=1 bash <(curl -fsSL %s)\n' "$SCRIPT_UPDATE_URL"
+  return 1
 }
 
 # 依赖：jq 是硬依赖（渲染配置）；curl/openssl 基本都有
