@@ -1,10 +1,12 @@
 # ACXC-Sing-Box
 
-sing-box 一键协议脚本 · 9 种协议 · 同协议多开 · 一键出链接
-
 ```bash
 curl -fsSL https://acxc-16.github.io/ACXC-Sing-Box/sb.sh | sudo bash
 ```
+
+## 简介
+
+基于 sing-box 的一键协议脚本
 
 ## 环境
 
