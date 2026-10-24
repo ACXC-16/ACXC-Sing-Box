@@ -440,8 +440,23 @@ sbx_os_pretty() {
 # ---- 平台后端：Debian/Ubuntu（apt + systemd）或 Alpine（apk + OpenRC）----
 SBX_INIT="${ACXC_SBX_INIT:-}"     # systemd | openrc，空=自动探测
 SBX_PKG="${ACXC_SBX_PKG:-}"       # apt | apk，空=跟随 SBX_INIT
+SBX_NO_INIT=0                     # 1=init 系统没在跑（容器/精简系统），只生成配置
 SBX_OS_ID=""
 SBX_OS_NAME=""
+
+# init 系统是否真的在运行（二进制存在 ≠ 在跑，Docker 里就是这样）
+sbx_init_running() {
+  case "$SBX_INIT" in
+    openrc)
+      [ -d /run/openrc ] && return 0
+      rc-status >/dev/null 2>&1
+      ;;
+    *)
+      [ -d /run/systemd/system ] && return 0
+      systemctl is-system-running >/dev/null 2>&1
+      ;;
+  esac
+}
 
 # 服务单元的路径随后端不同（Alpine 放到 /etc/init.d）
 sbx_apply_platform_paths() {
@@ -480,6 +495,7 @@ sbx_detect_platform() {
 # 装包：apt / apk
 sbx_pkg_install() { # $@=包名
   [ "$#" -gt 0 ] || return 0
+  [ -n "$SBX_PKG" ] || sbx_detect_platform
   case "$SBX_PKG" in
     apk) sbx_run apk add --no-cache "$@" ;;
     *)   sbx_run env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
@@ -489,6 +505,13 @@ sbx_pkg_install() { # $@=包名
 sbx_check_os() {
   [ "$SBX_DRY_RUN" -eq 1 ] && { sbx_detect_platform; return 0; }
   sbx_detect_platform
+
+  if ! sbx_init_running; then
+    SBX_NO_INIT=1
+    warn "检测到 ${SBX_INIT} 没有在运行（Docker / OpenVZ / 精简系统？）"
+    info "配置、链接、订阅都能正常生成，但服务不会自动启停"
+    info "装好后可手动前台运行：$SBX_BIN run -c $SBX_CONF -C $SBX_CONFD"
+  fi
 
   if [ "$SBX_INIT" = "openrc" ]; then
     sbx_have apk && return 0
@@ -1479,6 +1502,12 @@ sbx_apply() { # $1=说明 $2=期望监听的端口（可空）$3=tcp|udp
     sbx_snapshot_drop
     return 0
   fi
+  if [ "$SBX_NO_INIT" -eq 1 ]; then
+    info "配置已更新（当前环境没有 init 系统，跳过重载）"
+    info "需要生效请手动重启：$SBX_BIN run -c $SBX_CONF -C $SBX_CONFD"
+    sbx_snapshot_drop
+    return 0
+  fi
   if ! sbx_svc_reload; then
     err "重载服务失败"
     sbx_rollback
@@ -2033,14 +2062,19 @@ sbx_cmd_install() {
   sbx_unit_write || return 1
   sbx_logrotate_write || true
   if [ "$SBX_DRY_RUN" -eq 0 ]; then
-    sbx_svc_autostart sing-box on >/dev/null 2>&1 || true
-    sbx_svc_ctl sing-box restart || { err "启动失败，看日志：sb --log 30"; return 1; }
-    sleep 1
-    if sbx_svc_active; then
-      ok "sing-box 已启动"
+    if [ "$SBX_NO_INIT" -eq 1 ]; then
+      warn "当前环境没有 init 系统，不自动启动"
+      info "手动运行：$SBX_BIN run -c $SBX_CONF -C $SBX_CONFD"
     else
-      err "服务没起来，执行 10) 查看日志 排查"
-      return 1
+      sbx_svc_autostart sing-box on >/dev/null 2>&1 || true
+      sbx_svc_ctl sing-box restart || { err "启动失败，看日志：sb --log 30"; return 1; }
+      sleep 1
+      if sbx_svc_active; then
+        ok "sing-box 已启动"
+      else
+        err "服务没起来，执行 10) 查看日志 排查"
+        return 1
+      fi
     fi
   fi
   return 0
@@ -2529,6 +2563,11 @@ sbx_cmd_sub() { # $1=clash|links
 
 # ============================== 服务 / 信息 =================================
 sbx_cmd_service() { # $1=start|stop|restart|reload|status
+  if [ "$SBX_NO_INIT" -eq 1 ] && [ "$1" != "status" ]; then
+    err "当前环境没有运行中的 ${SBX_INIT}，无法${1}"
+    info "手动运行：$SBX_BIN run -c $SBX_CONF -C $SBX_CONFD"
+    return 1
+  fi
   case "$1" in
     start)   sbx_run sbx_svc_ctl sing-box start && ok "已启动" ;;
     stop)    sbx_run sbx_svc_ctl sing-box stop && ok "已停止" ;;
