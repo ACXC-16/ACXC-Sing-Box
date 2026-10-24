@@ -50,7 +50,7 @@ SBX_HOP_UNIT="/etc/systemd/system/singbox-porthop.service"
 LOG_FILE="${ACXC_SBX_LOG:-/var/log/acxc-singbox.log}"
 
 # sing-box 版本：安装/升级时用。空 = 自动查最新
-SBX_SB_VERSION="${ACXC_SBX_SB_VERSION:-1.14.3}"
+SBX_SB_VERSION="${ACXC_SBX_SB_VERSION:-}"        # 空 = 安装时自动查最新版
 
 # 默认值
 SBX_DEFAULT_SNI="https://addons.mozilla.org/"    # Reality 伪装目标（会自动取出主机名）
@@ -586,6 +586,35 @@ sbx_svc_since() {
 }
 
 sbx_sb_installed() { [ -x "$SBX_BIN" ]; }
+
+# 查 sing-box 最新版本号（GitHub API）；查不到时用兜底版本，保证离线可用
+SBX_SB_LATEST_FALLBACK="1.14.3"
+sbx_sb_latest() {
+  local v
+  v="$(curl -fsSL --connect-timeout 10 --max-time 20 \
+        https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null \
+      | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([0-9][^"]*\)".*/\1/p' | head -1)"
+  case "$v" in
+    [0-9]*) printf '%s' "$v"; return 0 ;;
+  esac
+  return 1
+}
+
+# 解析目标版本：空 / latest → 线上最新；指定了就照用
+sbx_sb_resolve_version() {
+  local v="${SBX_SB_VERSION:-}"
+  case "$v" in
+    ""|latest|LATEST)
+      if v="$(sbx_sb_latest)"; then
+        printf '%s' "$v"; return 0
+      fi
+      warn "查不到 sing-box 最新版本（GitHub API 不通），改用 ${SBX_SB_LATEST_FALLBACK}"
+      printf '%s' "$SBX_SB_LATEST_FALLBACK"
+      return 0 ;;
+  esac
+  printf '%s' "$v"
+  return 0
+}
 
 SBX_SB_VER_CACHE=""
 sbx_sb_version() {
@@ -1991,18 +2020,14 @@ EOF
 }
 
 sbx_cmd_install() {
-  local ver="${SBX_SB_VERSION:-}"
+  local ver
+  ver="$(sbx_sb_resolve_version)"
   if sbx_sb_installed; then
     info "已安装：$("$SBX_BIN" version 2>/dev/null | head -1)"
     if [ "$SBX_ASSUME_YES" -eq 0 ] && ! sbx_ask_yn "是否重新安装 / 覆盖？" n; then
       return 0
     fi
   fi
-  [ "$SBX_ASSUME_YES" -eq 0 ] && [ -z "$ver" ] && {
-    sbx_prompt "要安装的版本号" "1.14.3" || return 1
-    ver="$SBX_REPLY"
-  }
-  [ -n "$ver" ] || ver="1.14.3"
   sbx_install_singbox "$ver" || return 1
   sbx_layout_init || return 1
   sbx_unit_write || return 1
@@ -2024,12 +2049,7 @@ sbx_cmd_install() {
 # 用新版本二进制先校验现有配置，通过才替换
 sbx_cmd_update_singbox() {
   local ver newbin tmpdir okflag=1
-  ver="${SBX_SB_VERSION:-}"
-  if [ "$SBX_ASSUME_YES" -eq 0 ]; then
-    sbx_prompt "目标版本" "$SBX_SB_VERSION" || return 1
-    [ -n "$SBX_REPLY" ] && ver="$SBX_REPLY"
-  fi
-  [ -n "$ver" ] || ver="$SBX_SB_VERSION"
+  ver="$(sbx_sb_resolve_version)"
   if [ "$SBX_DRY_RUN" -eq 1 ]; then
     info "[dry-run] 将下载 v${ver}，用新二进制 check 现有配置通过后替换"
     return 0
@@ -2986,7 +3006,7 @@ sbx_menu_main() {
   fi
   # 第一次进菜单：没装 sing-box 就直接装
   if ! sbx_sb_installed; then
-    info "还没安装 sing-box，开始安装 v${SBX_SB_VERSION}…"
+    info "还没安装 sing-box，开始安装最新版…"
     sbx_cmd_install || warn "安装未完成，稍后可用 11) 更新 sing-box 再试"
   fi
   while :; do
@@ -3104,7 +3124,7 @@ ${SCRIPT_NAME} v${SCRIPT_VERSION}
 
 用法:
   bash $0                         交互式菜单
-  bash $0 --install [--sb-version 1.14.3]
+  bash $0 --install [--sb-version x.y.z]   默认装最新版
   bash $0 --add <协议> [--name 名字] [--port 端口] [--sni 域名] [--remark 备注]
       协议：reality | hysteria2 | shadowsocks | trojan | anytls | socks | wireguard | tuic | snell
   bash $0 --list | --show <名字> | --link <名字> [--qr]
