@@ -6,11 +6,8 @@ sing-box 一键协议脚本 · 9 种协议 · 同协议多开 · 一键出链接
 curl -fsSL https://acxc-16.github.io/ACXC-Sing-Box/sb.sh | sudo bash
 ```
 
-**支持三个系统**：Debian 12、Ubuntu 22.04+（apt + systemd）、Alpine 3.19+（apk + OpenRC）。同一份脚本，启动时自动识别系统、包管理器和服务管理器。
-
-**Alpine 安装前**：先执行 `apk add --no-cache bash curl`（Alpine 默认不带 bash 和 curl），再跑上面那条命令，地址不变。
-
-**首次运行**：自动装依赖（jq 等）、注册 `sb` 命令、安装 sing-box，全程无需回答。
+支持 **Debian 12 / Ubuntu 22.04+ / Alpine 3.19+**，自动识别。
+Alpine 先 `apk add bash curl`。首次运行自动装依赖与 sing-box，并注册 `sb`。
 
 ## 🔌 支持协议
 
