@@ -542,13 +542,8 @@ sbx_check_deps() {
     sbx_have ss || missing="$missing iproute2"
   fi
   [ -z "$missing" ] && return 0
-  warn "缺少依赖：${missing# }"
-  if [ "$SBX_ASSUME_YES" -eq 0 ]; then
-    if ! sbx_ask_yn "现在用 ${SBX_PKG} 安装${missing# }？" y; then
-      err "缺少依赖无法继续"
-      return 1
-    fi
-  fi
+  # 首次运行直接装，不打断用户（缺 jq 脚本没法渲染配置，必须装）
+  info "缺少依赖：${missing# }，自动安装…"
   # shellcheck disable=SC2086
   sbx_pkg_install $missing || { err "依赖安装失败"; return 1; }
   ok "依赖已安装"
@@ -2986,17 +2981,13 @@ sbx_menu_main() {
     sbx_banner
   fi
   if [ "$need_self" -eq 1 ]; then
-    info "当前是临时文件：$0"
-    if sbx_ask_yn "装成命令 sb（以后直接输入 sb 打开）？" y; then
-      sbx_install_self || warn "安装失败，不影响继续使用"
-    fi
+    info "首次运行：安装为命令 sb（之后直接输入 sb 打开）"
+    sbx_install_self || warn "安装失败，不影响本次继续使用"
   fi
-  # 第一次进菜单：没装 sing-box 就先问一句（--yes 时直接装）
+  # 第一次进菜单：没装 sing-box 就直接装
   if ! sbx_sb_installed; then
-    warn "还没有安装 sing-box"
-    if sbx_ask_yn "现在安装 v${SBX_SB_VERSION}？" y; then
-      sbx_cmd_install || warn "安装未完成，稍后可用 11) 更新 sing-box 再试"
-    fi
+    info "还没安装 sing-box，开始安装 v${SBX_SB_VERSION}…"
+    sbx_cmd_install || warn "安装未完成，稍后可用 11) 更新 sing-box 再试"
   fi
   while :; do
     sbx_clear

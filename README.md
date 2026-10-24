@@ -10,6 +10,8 @@ curl -fsSL https://acxc-16.github.io/ACXC-Sing-Box/sb.sh | sudo bash
 
 Alpine 默认没有 bash，先跑一次 `apk add --no-cache bash curl`，再执行上面那条命令（地址不变）。
 
+首次运行会自动装好依赖（jq 等）、注册 `sb` 命令、安装 sing-box，全程不用回答任何问题。
+
 ## 🔌 支持协议
 
 - VLESS TCP + XTLS Vision + Reality（推荐）
