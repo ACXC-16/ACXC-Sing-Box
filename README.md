@@ -14,6 +14,8 @@ curl -fsSL https://acxc-16.github.io/ACXC-Sing-Box/sb.sh | sudo bash
 
 Alpine 需要先 `apk add bash curl`
 
+Debian / Ubuntu 首次使用可能需要 `apt install curl`
+
 ## 🔌 支持协议
 
 - VLESS TCP + XTLS Vision + Reality（推荐）
